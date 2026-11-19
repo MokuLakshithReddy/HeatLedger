@@ -13,6 +13,7 @@ import { router } from "expo-router";
 import { Language, translations } from "@/lib/i18n";
 import { SessionStore } from "@/lib/store";
 import { mobileApiFetch } from "@/lib/api";
+import * as Location from "expo-location";
 
 export default function WorkerDashboard() {
   const [lang, setLang] = useState<Language>("te"); // Default Telugu for Hyderabad workers
@@ -22,23 +23,22 @@ export default function WorkerDashboard() {
   const [activeShift, setActiveShift] = useState<any>(null);
   const [todayWorkMins, setTodayWorkMins] = useState(0);
   const [todayBreakMins, setTodayBreakMins] = useState(0);
-  const [weatherObs, setWeatherObs] = useState<any>({
-    temp: 40.0,
-    rh: 35,
-    hi: 45.0,
-    wbgt: 31.0,
-    risk: "DANGER",
-    station: "Hyderabad Central",
-    freshness: "LIVE_ESTIMATE",
-  });
+  const [weatherObs, setWeatherObs] = useState<any>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!SessionStore.get()) {
-      router.replace("/(auth)/sign-in");
-      return;
+    async function init() {
+      let current = SessionStore.get();
+      if (!current) {
+        current = await SessionStore.loadStoredSession();
+      }
+      if (!current) {
+        router.replace("/(auth)/sign-in");
+        return;
+      }
+      loadDashboard();
     }
-    loadDashboard();
+    init();
   }, []);
 
   async function loadDashboard() {
@@ -73,13 +73,43 @@ export default function WorkerDashboard() {
 
   const handleStartShift = async () => {
     setLoading(true);
+    let trackingAllowed = false;
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      trackingAllowed = (status === "granted");
+    } catch (permErr) {
+      console.warn("Location permission request:", permErr);
+    }
+
     try {
       const newShift = await mobileApiFetch<any>("/shifts/start", {
         method: "POST",
-        body: JSON.stringify({ location_tracking_enabled: true }),
+        body: JSON.stringify({ location_tracking_enabled: trackingAllowed }),
       });
       setActiveShift(newShift);
-      Alert.alert("Shift Started", "Your work and climate exposure are being recorded.");
+
+      if (trackingAllowed) {
+        try {
+          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          await mobileApiFetch(`/shifts/${newShift.id}/location-samples`, {
+            method: "POST",
+            body: JSON.stringify({
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+              accuracy_meters: loc.coords.accuracy || 10.0,
+            }),
+          });
+        } catch (locErr) {
+          console.warn("Initial location sample fix error:", locErr);
+        }
+      }
+
+      Alert.alert(
+        "Shift Started",
+        trackingAllowed
+          ? "Your work and consensual GPS exposure are being recorded."
+          : "Shift active without location tracking (permission off)."
+      );
       loadDashboard();
     } catch (e: any) {
       Alert.alert("Shift Error", e.message || "Failed to start shift");
@@ -211,33 +241,40 @@ export default function WorkerDashboard() {
         </View>
 
         {/* Live Environmental Exposure Card */}
-        <View style={styles.heatCard}>
-          <View style={styles.heatHeader}>
-            <Text style={styles.heatTitle}>🔥 {t.live_heat_index}</Text>
-            <Text style={styles.dangerTag}>{weatherObs.risk.replace("_", " ")}</Text>
-          </View>
+        {weatherObs ? (
+          <View style={styles.heatCard}>
+            <View style={styles.heatHeader}>
+              <Text style={styles.heatTitle}>🔥 {t.live_heat_index}</Text>
+              <Text style={styles.dangerTag}>{weatherObs.risk ? weatherObs.risk.replace("_", " ") : "CAUTION"}</Text>
+            </View>
 
-          <View style={styles.heatNumbersRow}>
-            <View>
-              <Text style={styles.heatBigNumber}>{weatherObs.hi}°C</Text>
-              <Text style={styles.heatSubText}>Apparent Rothfusz HI</Text>
+            <View style={styles.heatNumbersRow}>
+              <View>
+                <Text style={styles.heatBigNumber}>{weatherObs.hi}°C</Text>
+                <Text style={styles.heatSubText}>Apparent Rothfusz HI</Text>
+              </View>
+              <View style={styles.heatDivider} />
+              <View>
+                <Text style={styles.heatSubNumber}>{weatherObs.temp}°C</Text>
+                <Text style={styles.heatSubText}>Ambient Temp</Text>
+              </View>
+              <View style={styles.heatDivider} />
+              <View>
+                <Text style={styles.heatSubNumber}>{weatherObs.wbgt}°C</Text>
+                <Text style={styles.heatSubText}>sWBGT Proxy</Text>
+              </View>
             </View>
-            <View style={styles.heatDivider} />
-            <View>
-              <Text style={styles.heatSubNumber}>{weatherObs.temp}°C</Text>
-              <Text style={styles.heatSubText}>Ambient Temp</Text>
-            </View>
-            <View style={styles.heatDivider} />
-            <View>
-              <Text style={styles.heatSubNumber}>{weatherObs.wbgt}°C</Text>
-              <Text style={styles.heatSubText}>sWBGT Proxy</Text>
-            </View>
-          </View>
 
-          <Text style={styles.heatStationFootnote}>
-            Station: {weatherObs.station} • Relative Humidity: {weatherObs.rh}%
-          </Text>
-        </View>
+            <Text style={styles.heatStationFootnote}>
+              Station: {weatherObs.station} • Relative Humidity: {weatherObs.rh}%
+            </Text>
+          </View>
+        ) : (
+          <View style={styles.heatCard}>
+            <Text style={styles.heatTitle}>Weather Telemetry</Text>
+            <Text style={styles.heatSubText}>Connecting to meteorological observation feed...</Text>
+          </View>
+        )}
 
         {/* Quick Access Buttons */}
         <View style={styles.quickActionsContainer}>

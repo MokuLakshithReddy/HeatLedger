@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 import hashlib
 
 from backend.app.core.database import get_db
-from backend.app.models.entities import EvidenceReport
+from backend.app.models.entities import EvidenceReport, utc_now
 from backend.app.schemas.evidence import EvidenceTimelineResponse
 from backend.app.schemas.reports import EvidenceReportCreate, EvidenceReportResponse
 from backend.app.evidence.correlator import EvidenceCorrelator
@@ -103,12 +103,43 @@ def verify_report_integrity(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """EVID-01: Verifies the integrity of a generated report against stored SHA-256."""
+    """EVID-01: Verifies the integrity of a generated report against stored SHA-256 with strict scoped access."""
     report = db.query(EvidenceReport).filter(EvidenceReport.id == report_id).first()
     if not report:
         raise HTTPException(status_code=404, detail="Report not found")
     
-    pdf_bytes = ReportGeneratorService.get_report_pdf(db, report_id)
+    # Ownership and Scoped Access Enforcement (PRIV-02 & EVID-01)
+    is_owner = report.worker_id == current_user.id
+    is_admin = current_user.role == "system_admin"
+    is_authorized_org = False
+
+    if not is_owner and not is_admin:
+        from backend.app.models.entities import ShareGrant, OrganisationMember, Organisation
+        now = utc_now()
+        active_grant = (
+            db.query(ShareGrant)
+            .join(OrganisationMember, OrganisationMember.organisation_id == ShareGrant.organisation_id)
+            .join(Organisation, Organisation.id == ShareGrant.organisation_id)
+            .filter(
+                ShareGrant.report_id == report_id,
+                OrganisationMember.user_id == current_user.id,
+                OrganisationMember.is_active == True,
+                Organisation.is_approved == True,
+                ShareGrant.is_revoked == False,
+                ShareGrant.expires_at > now,
+            )
+            .first()
+        )
+        if active_grant:
+            is_authorized_org = True
+
+    if not is_owner and not is_admin and not is_authorized_org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied: You do not own this evidence dossier and have no active sharing grant.",
+        )
+    
+    pdf_bytes = ReportGeneratorService.get_report_pdf(db, report_id, worker_id=report.worker_id)
     calculated_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
     is_valid = calculated_sha256.lower() == report.integrity_sha256.lower()
 
@@ -130,8 +161,14 @@ async def verify_uploaded_report_pdf(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    """EVID-01: Publicly verifiable endpoint to verify any HeatLedger PDF by file upload."""
-    contents = await file.read()
+    """EVID-01: Publicly verifiable endpoint to verify any HeatLedger PDF by file upload with strict 10MB bounds."""
+    MAX_VERIFY_SIZE = 10 * 1024 * 1024 # 10MB
+    contents = await file.read(MAX_VERIFY_SIZE + 1)
+    if len(contents) > MAX_VERIFY_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Uploaded verification document exceeds maximum allowable limit of 10MB."
+        )
     file_sha256 = hashlib.sha256(contents).hexdigest()
 
     matching_report = (

@@ -1,0 +1,24 @@
+name: Docker Build & Verification
+
+on:
+  push:
+    branches: [ main, fix/production-readiness ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  docker-compose-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Compose Services
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+        run: |
+          docker compose build --progress=plain

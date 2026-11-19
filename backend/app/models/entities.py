@@ -62,7 +62,7 @@ class Organisation(Base):
     description = Column(Text, nullable=True)
     contact_email = Column(String(255), nullable=False)
     org_type = Column(String(50), nullable=False, default="union") # union, ngo, welfare_board, research
-    is_approved = Column(Boolean, default=True, nullable=False)
+    is_approved = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 

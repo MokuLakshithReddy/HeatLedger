@@ -82,6 +82,14 @@ def test_scenario_2_earnings_upload_and_confirmation(client):
     token = reg_resp.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
+    # Explicitly grant prior consent for earnings processing
+    consent_resp = client.post("/api/v1/profiles/me/consents", headers=headers, json={
+        "purpose": "EARNINGS_PROCESSING",
+        "is_granted": True,
+        "consent_text_version": "1.0",
+    })
+    assert consent_resp.status_code == 200
+
     # 2. Upload statement CSV
     csv_bytes = (
         b"Period | Platform | Base Delivery | Incentives | Deductions | Net Payment\n"

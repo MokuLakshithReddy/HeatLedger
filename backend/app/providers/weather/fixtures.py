@@ -66,7 +66,8 @@ class HyderabadDemoProvider(BaseWeatherProvider):
 
         return WeatherObservationDTO(
             provider_name=self.provider_name,
-            source_identifier=station["id"],
+            source_identifier=f"{station['name']} (Simulated Fixture)",
+            data_type="DEMO_FIXTURE",
             latitude=station["lat"],
             longitude=station["lon"],
             spatial_resolution_km=5.0,
@@ -77,10 +78,10 @@ class HyderabadDemoProvider(BaseWeatherProvider):
             wbgt_estimated_celsius=wbgt_c,
             wind_speed_mps=wind_mps,
             solar_radiation_wm2=750.0 if 6 <= (now.hour + 5.5) % 24 <= 18 else 0.0,
-            confidence_score=0.90,
+            confidence_score=0.50, # Demo/simulated fixture
             data_freshness_status="DEMO_SAMPLE",
-            validation_status="FALLBACK",
-            raw_payload={"station_name": station["name"], "city": "Hyderabad", "state": "Telangana"},
+            validation_status="DEMO_FIXTURE",
+            raw_payload={"station_name": f"{station['name']} (Simulated Fixture)", "city": "Hyderabad", "state": "Telangana"},
         )
 
     async def get_observations_for_interval(

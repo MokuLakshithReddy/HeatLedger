@@ -30,24 +30,51 @@ class IMDWeatherProvider(BaseWeatherProvider):
             logger.info("IMD API key not configured; skipping live IMD fetch.")
             return None
 
-        endpoint = f"{self.base_url}/current_weather"
+        endpoint = f"{self.base_url}/api/v1/current_wx"
         headers = {"X-Api-Key": self.api_key, "Accept": "application/json"}
         params = {"lat": str(latitude), "lon": str(longitude)}
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(endpoint, headers=headers, params=params)
+                # Fallback to aws_data if current_wx not present
+                if response.status_code == 404:
+                    response = await client.get(f"{self.base_url}/api/v1/aws_data", headers=headers, params=params)
+
                 if response.status_code == 200:
                     data = response.json()
-                    temp_c = float(data.get("temperature", data.get("TEMP", 0.0)))
-                    rh_pct = float(data.get("humidity", data.get("RH", 0.0)))
+                    # Handle dict or list returned by IMD API
+                    if isinstance(data, list) and len(data) > 0:
+                        data = data[0]
+
+                    # Parse official IMD schema fields
+                    raw_temp = data.get("TEMP") or data.get("temp_c") or data.get("dry_bulb_temp") or data.get("temperature")
+                    raw_rh = data.get("RH") or data.get("humidity_percentage") or data.get("humidity")
+
+                    if raw_temp is None or raw_rh is None:
+                        logger.warning("IMD response missing mandatory TEMP or RH; returning None.")
+                        return None
+
+                    temp_c = float(raw_temp)
+                    rh_pct = float(raw_rh)
                     hi_c, _ = calculate_heat_index(temp_c, rh_pct)
-                    wind_speed = float(data.get("wind_speed", data.get("WS", 0.0)))
+
+                    raw_ws = data.get("WS") or data.get("wind_speed_mps") or data.get("wind_speed")
+                    if raw_ws is None and data.get("wind_speed_kmph") is not None:
+                        wind_speed = round(float(data.get("wind_speed_kmph")) / 3.6, 1)
+                    else:
+                        wind_speed = float(raw_ws or 0.0)
+
                     wbgt_c = calculate_simplified_wbgt_proxy(temp_c, rh_pct, wind_speed_mps=wind_speed)
                     
-                    # CLIM-02: Preserve actual observation timestamp from source; do not overwrite with server ingestion time
+                    # CLIM-02: Preserve actual observation timestamp from source
                     observed_at = None
-                    obs_time_raw = data.get("observed_at") or data.get("observation_time") or data.get("TIMESTAMP")
+                    obs_time_raw = (
+                        data.get("TIME_UTC")
+                        or data.get("TIMESTAMP")
+                        or data.get("date_time")
+                        or data.get("observed_at")
+                    )
                     if obs_time_raw:
                         try:
                             observed_at = datetime.fromisoformat(str(obs_time_raw).replace("Z", "+00:00"))
@@ -56,11 +83,18 @@ class IMDWeatherProvider(BaseWeatherProvider):
                     if not observed_at:
                         observed_at = datetime.now(timezone.utc)
 
-                    station_id = str(data.get("station_id") or data.get("STATION_ID") or "IMD_AWS_HYDERABAD_43128")
+                    station_id = str(
+                        data.get("STATION_NAME")
+                        or data.get("station_name")
+                        or data.get("STATION_ID")
+                        or data.get("station_code")
+                        or "IMD_AWS_HYDERABAD_43128"
+                    )
 
                     return WeatherObservationDTO(
                         provider_name=self.provider_name,
                         source_identifier=station_id,
+                        data_type="DIRECT_STATION_OBSERVATION",
                         latitude=float(data.get("lat", latitude)),
                         longitude=float(data.get("lon", longitude)),
                         spatial_resolution_km=10.0,
@@ -93,7 +127,7 @@ class IMDWeatherProvider(BaseWeatherProvider):
         if not self.api_key:
             return []
 
-        endpoint = f"{self.base_url}/historical"
+        endpoint = f"{self.base_url}/api/v1/aws_data"
         headers = {"X-Api-Key": self.api_key, "Accept": "application/json"}
         params = {
             "lat": str(latitude),
@@ -106,19 +140,28 @@ class IMDWeatherProvider(BaseWeatherProvider):
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(endpoint, headers=headers, params=params)
                 if response.status_code == 200:
-                    records = response.json().get("observations", [])
+                    records = response.json().get("observations", response.json() if isinstance(response.json(), list) else [])
                     out = []
                     for r in records:
-                        temp_c = float(r.get("temperature", 0.0))
-                        rh_pct = float(r.get("humidity", 0.0))
+                        raw_temp = r.get("TEMP") or r.get("temp_c") or r.get("temperature")
+                        raw_rh = r.get("RH") or r.get("humidity_percentage") or r.get("humidity")
+                        if raw_temp is None or raw_rh is None:
+                            continue
+                        temp_c = float(raw_temp)
+                        rh_pct = float(raw_rh)
                         hi_c, _ = calculate_heat_index(temp_c, rh_pct)
-                        wind_speed = float(r.get("wind_speed", 0.0))
+                        raw_ws = r.get("WS") or r.get("wind_speed_mps") or r.get("wind_speed")
+                        if raw_ws is None and r.get("wind_speed_kmph") is not None:
+                            wind_speed = round(float(r.get("wind_speed_kmph")) / 3.6, 1)
+                        else:
+                            wind_speed = float(raw_ws or 0.0)
                         wbgt_c = calculate_simplified_wbgt_proxy(temp_c, rh_pct, wind_speed_mps=wind_speed)
                         
                         obs_dt = None
-                        if "observed_at" in r:
+                        obs_time_raw = r.get("TIME_UTC") or r.get("TIMESTAMP") or r.get("observed_at")
+                        if obs_time_raw:
                             try:
-                                obs_dt = datetime.fromisoformat(r["observed_at"].replace("Z", "+00:00"))
+                                obs_dt = datetime.fromisoformat(str(obs_time_raw).replace("Z", "+00:00"))
                             except Exception:
                                 pass
                         if not obs_dt:
@@ -126,7 +169,8 @@ class IMDWeatherProvider(BaseWeatherProvider):
 
                         out.append(WeatherObservationDTO(
                             provider_name=self.provider_name,
-                            source_identifier=str(r.get("station_id", "IMD_AWS_HYDERABAD_43128")),
+                            source_identifier=str(r.get("STATION_NAME") or r.get("station_id") or "IMD_AWS_HYDERABAD_43128"),
+                            data_type="DIRECT_STATION_OBSERVATION",
                             latitude=float(r.get("lat", latitude)),
                             longitude=float(r.get("lon", longitude)),
                             spatial_resolution_km=10.0,

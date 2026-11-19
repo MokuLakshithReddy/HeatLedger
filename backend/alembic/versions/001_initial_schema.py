@@ -56,7 +56,7 @@ def upgrade() -> None:
         sa.Column('description', sa.Text(), nullable=True),
         sa.Column('contact_email', sa.String(255), nullable=False),
         sa.Column('org_type', sa.String(50), server_default='union', nullable=False),
-        sa.Column('is_approved', sa.Boolean(), server_default='1', nullable=False),
+        sa.Column('is_approved', sa.Boolean(), server_default='0', nullable=False),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
     )

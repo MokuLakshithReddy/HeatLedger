@@ -31,7 +31,7 @@ class EarningsPipeline:
         worker_id: str,
         file: UploadFile,
     ) -> Tuple[EarningsUpload, EarningEntry]:
-        # EARN-06: Check if worker has explicitly revoked consent for earnings processing
+        # EARN-06: Require explicit prior consent for earnings processing (never silently grant on upload)
         latest_consent = (
             db.query(ConsentRecord)
             .filter(
@@ -41,16 +41,15 @@ class EarningsPipeline:
             .order_by(ConsentRecord.created_at.desc())
             .first()
         )
-        if latest_consent and not latest_consent.is_granted:
+        if not latest_consent:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Processing rejected: Explicit prior worker consent required for 'earnings_processing'.",
+            )
+        if not latest_consent.is_granted:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Processing rejected: Worker has explicitly revoked consent for 'earnings_processing'.",
-            )
-        
-        # If no consent record exists yet, record initial document processing consent
-        if not latest_consent:
-            ConsentService.grant_consent(
-                db, worker_id, "EARNINGS_DOCUMENT_EXTRACTION", consent_text_version="1.0-upload"
             )
 
         # 1. Validate file extension

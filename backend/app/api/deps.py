@@ -41,6 +41,17 @@ def get_current_user(
             detail="User not found or inactive",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # Propagate session identity to PostgreSQL for Row Level Security (RLS)
+    try:
+        bind = db.get_bind()
+        if bind and bind.dialect.name == "postgresql":
+            from sqlalchemy import text
+            db.execute(text("SET LOCAL app.current_user_id = :uid"), {"uid": str(user.id)})
+            db.execute(text("SET LOCAL app.current_user_role = :role"), {"role": str(user.role)})
+    except Exception as e:
+        logger.warning(f"Could not set PostgreSQL RLS session variables: {e}")
+
     return user
 
 def get_current_worker(

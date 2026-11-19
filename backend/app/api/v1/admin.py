@@ -74,6 +74,19 @@ def approve_organisation(
     
     org.is_approved = True
     org.updated_at = utc_now()
+
+    # Activate members and elevate creator to organisation_admin upon approval
+    from backend.app.models.entities import OrganisationMember, User
+    members = db.query(OrganisationMember).filter(OrganisationMember.organisation_id == org.id).all()
+    for m in members:
+        m.is_active = True
+        if m.role == "admin":
+            user = db.query(User).filter(User.id == m.user_id).first()
+            if user and user.role == "worker":
+                user.role = "organisation_admin"
+                db.add(user)
+        db.add(m)
+
     db.commit()
     db.refresh(org)
 
@@ -97,6 +110,13 @@ def reject_organisation(
     
     org.is_approved = False
     org.updated_at = utc_now()
+
+    from backend.app.models.entities import OrganisationMember
+    members = db.query(OrganisationMember).filter(OrganisationMember.organisation_id == org.id).all()
+    for m in members:
+        m.is_active = False
+        db.add(m)
+
     db.commit()
     db.refresh(org)
 

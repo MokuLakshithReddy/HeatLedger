@@ -31,6 +31,9 @@ def test_deterministic_earnings_extraction():
 
 @pytest.mark.asyncio
 async def test_earnings_upload_and_worker_confirmation(db_session, worker_user):
+    from backend.app.services.consent_service import ConsentService
+    ConsentService.grant_consent(db_session, worker_user.id, "EARNINGS_PROCESSING")
+
     file_content = b"Date | Platform | Base Pay | Incentives | Net Pay\n2026-05-12 | Zomato | 3000 | 500 | 3500\n"
     upload_file = UploadFile(
         filename="zomato_statement.csv",

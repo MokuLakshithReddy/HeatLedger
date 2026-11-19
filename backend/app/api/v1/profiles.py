@@ -285,38 +285,36 @@ def request_account_deletion(
     """
     now = utc_now()
 
-    # 1. Stop any active or paused shifts
-    active_shifts = (
-        db.query(Shift)
-        .filter(Shift.worker_id == current_user.id, Shift.status.in_(["ACTIVE", "PAUSED"]))
-        .all()
-    )
-    for s in active_shifts:
-        s.status = "COMPLETED"
-        s.ended_at = now
-        s.location_tracking_enabled = False
+    # 1. Count active shares and shifts before purging
+    share_count = db.query(ShareGrant).filter(ShareGrant.worker_id == current_user.id).count()
 
-    # 2. Immediately revoke all active share grants
-    active_shares = (
-        db.query(ShareGrant)
-        .filter(ShareGrant.worker_id == current_user.id, ShareGrant.is_revoked == False)
-        .all()
-    )
-    for g in active_shares:
-        g.is_revoked = True
-        g.revoked_at = now
+    # 2. Purge storage files via StorageProvider (Local and S3)
+    from backend.app.core.storage import get_storage_provider
+    storage = get_storage_provider()
+    files_purged = 0
 
-    # 3. Revoke all active consents
-    active_consents = (
-        db.query(ConsentRecord)
-        .filter(ConsentRecord.user_id == current_user.id, ConsentRecord.is_granted == True)
-        .all()
-    )
-    for c in active_consents:
-        c.is_granted = False
-        c.revoked_at = now
+    uploads = db.query(EarningsUpload).filter(EarningsUpload.worker_id == current_user.id).all()
+    upload_count = len(uploads)
+    for up in uploads:
+        if up.stored_filepath:
+            try:
+                storage.delete_file(up.stored_filepath)
+                files_purged += 1
+            except Exception:
+                pass
 
-    # 4. Safely purge stored files on disk
+    reports = db.query(EvidenceReport).filter(EvidenceReport.worker_id == current_user.id).all()
+    report_count = len(reports)
+    report_ids = [r.id for r in reports]
+    for rep in reports:
+        if rep.pdf_storage_path:
+            try:
+                storage.delete_file(rep.pdf_storage_path)
+                files_purged += 1
+            except Exception:
+                pass
+
+    # Clean local storage directory if present
     user_storage_dir = os.path.join(settings.LOCAL_STORAGE_DIR, current_user.id)
     if os.path.exists(user_storage_dir):
         try:
@@ -324,20 +322,63 @@ def request_account_deletion(
         except Exception:
             pass
 
-    # 5. Anonymize user record
+    # 4. Genuine Database Purging & Cascade
+    # Delete report sources
+    if report_ids:
+        db.query(ReportSource).filter(ReportSource.report_id.in_(report_ids)).delete(synchronize_session=False)
+
+    # Delete evidence reports & shares
+    db.query(ShareGrant).filter(ShareGrant.worker_id == current_user.id).delete(synchronize_session=False)
+    db.query(EvidenceReport).filter(EvidenceReport.worker_id == current_user.id).delete(synchronize_session=False)
+
+    # Delete earnings entries & uploads
+    entry_count = db.query(EarningEntry).filter(EarningEntry.worker_id == current_user.id).delete(synchronize_session=False)
+    db.query(EarningsUpload).filter(EarningsUpload.worker_id == current_user.id).delete(synchronize_session=False)
+
+    # Delete shifts, breaks, location samples, exposure intervals
+    shifts = db.query(Shift).filter(Shift.worker_id == current_user.id).all()
+    shift_ids = [s.id for s in shifts]
+    shift_count = len(shifts)
+    loc_count = 0
+    break_count = 0
+    exposure_count = 0
+
+    if shift_ids:
+        loc_count = db.query(LocationSample).filter(LocationSample.shift_id.in_(shift_ids)).delete(synchronize_session=False)
+        break_count = db.query(BreakEvent).filter(BreakEvent.shift_id.in_(shift_ids)).delete(synchronize_session=False)
+        exposure_count = db.query(ExposureInterval).filter(ExposureInterval.shift_id.in_(shift_ids)).delete(synchronize_session=False)
+        db.query(Shift).filter(Shift.worker_id == current_user.id).delete(synchronize_session=False)
+
+    # Delete worker profile
+    db.query(WorkerProfile).filter(WorkerProfile.user_id == current_user.id).delete(synchronize_session=False)
+
+    # Revoke all consents
+    db.query(ConsentRecord).filter(ConsentRecord.user_id == current_user.id).delete(synchronize_session=False)
+
+    # Anonymize user record
     log_audit(db, current_user.id, "ACCOUNT_DATA_PURGED", "User", current_user.id, None, request)
     current_user.is_active = False
     current_user.full_name = "Deleted Worker"
     current_user.email = f"deleted_{current_user.id[:8]}@heatledger.local"
     current_user.phone = None
+    current_user.hashed_password = "DELETED"
     current_user.updated_at = now
     db.commit()
 
     return {
         "success": True,
         "deletion_status": "COMPLETED",
-        "message": (
-            "Account data successfully deleted and anonymized. All active sharing grants and consents "
-            "have been immediately revoked, and private document storage purged in compliance with DPDP requirements."
-        ),
+        "purged_records": {
+            "location_samples": loc_count,
+            "shifts": shift_count,
+            "breaks": break_count,
+            "exposure_intervals": exposure_count,
+            "earnings_uploads": upload_count,
+            "earnings_entries": entry_count,
+            "evidence_reports": report_count,
+            "share_grants": share_count,
+            "storage_files_purged": files_purged,
+        },
+        "user_anonymized": True,
+        "message": "All linked worker data, location samples, earnings, and files have been permanently purged.",
     }

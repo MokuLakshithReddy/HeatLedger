@@ -16,6 +16,7 @@ class WeatherObservationDTO(BaseModel):
     wbgt_estimated_celsius: Optional[float] = None
     wind_speed_mps: Optional[float] = None
     solar_radiation_wm2: Optional[float] = None
+    data_type: str = "DIRECT_STATION_OBSERVATION" # DIRECT_STATION_OBSERVATION, GRIDDED_REANALYSIS, DEMO_FIXTURE
     confidence_score: float = 1.0
     data_freshness_status: str # REALTIME, HOURLY, HISTORICAL_REANALYSIS, DEMO_SAMPLE
     validation_status: str # VALIDATED, PROVISIONAL, FALLBACK

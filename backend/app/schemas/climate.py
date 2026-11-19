@@ -7,14 +7,21 @@ class WeatherObservationResponse(BaseSchema):
     id: str
     provider_name: str
     source_identifier: str
+    station_name: Optional[str] = None
+    data_type: str = Field(default="DIRECT_STATION_OBSERVATION", description="DIRECT_STATION_OBSERVATION | GRIDDED_REANALYSIS | DEMO_FIXTURE")
+    is_demo: bool = False
     latitude: float
     longitude: float
     spatial_resolution_km: Optional[float] = None
     observed_at: datetime
     temperature_celsius: float
+    temperature_c: Optional[float] = None # Frontend alias
     relative_humidity_pct: float
     heat_index_celsius: Optional[float] = None
+    heat_index_c: Optional[float] = None # Frontend alias
     wbgt_estimated_celsius: Optional[float] = None
+    swbgt_proxy_c: Optional[float] = None # Frontend alias
+    risk_category: Optional[str] = None
     wind_speed_mps: Optional[float] = None
     solar_radiation_wm2: Optional[float] = None
     confidence_score: float

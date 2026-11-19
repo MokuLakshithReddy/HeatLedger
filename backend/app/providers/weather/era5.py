@@ -133,8 +133,14 @@ class ERA5LandProvider(BaseWeatherProvider):
                 except Exception:
                     pass
 
-            temp_k = float(item.get("2m_temperature", item.get("t2m", 305.15)))
-            dew_k = float(item.get("2m_dewpoint_temperature", item.get("d2m", 295.15)))
+            raw_temp = item.get("2m_temperature") if "2m_temperature" in item else item.get("t2m")
+            raw_dew = item.get("2m_dewpoint_temperature") if "2m_dewpoint_temperature" in item else item.get("d2m")
+            if raw_temp is None or raw_dew is None:
+                logger.warning("ERA5-Land reanalysis record missing temperature or dewpoint; skipping invalid record.")
+                continue
+
+            temp_k = float(raw_temp)
+            dew_k = float(raw_dew)
             
             temp_c = kelvin_to_celsius(temp_k)
             dew_c = kelvin_to_celsius(dew_k)
@@ -150,7 +156,8 @@ class ERA5LandProvider(BaseWeatherProvider):
             results.append(
                 WeatherObservationDTO(
                     provider_name=self.provider_name,
-                    source_identifier=f"ERA5_LAND_GRID_{latitude:.2f}_{longitude:.2f}",
+                    source_identifier=f"ERA5_LAND_GRID_{latitude:.2f}_{longitude:.2f} (Gridded Reanalysis 0.1°)",
+                    data_type="GRIDDED_REANALYSIS",
                     latitude=latitude,
                     longitude=longitude,
                     spatial_resolution_km=self.spatial_resolution_km,
@@ -161,7 +168,7 @@ class ERA5LandProvider(BaseWeatherProvider):
                     wbgt_estimated_celsius=wbgt_c,
                     wind_speed_mps=wind_speed,
                     solar_radiation_wm2=None,
-                    confidence_score=0.90,
+                    confidence_score=0.85, # Gridded model, not direct station sensor
                     data_freshness_status="ARCHIVED_REANALYSIS",
                     validation_status="VALIDATED",
                     raw_payload=item,

@@ -53,21 +53,15 @@ def register_organisation(
     db.commit()
     db.refresh(org)
 
-    # Creator becomes initial OrganisationMember admin
+    # Creator becomes initial OrganisationMember admin (pending org approval)
     from backend.app.models.entities import OrganisationMember
     member = OrganisationMember(
         organisation_id=org.id,
         user_id=current_user.id,
         role="admin",
-        is_active=True,
+        is_active=False, # SEC-02: Remains inactive until system admin approves organisation
     )
     db.add(member)
-    
-    # Also assign role to user if not admin
-    if current_user.role == "worker":
-        current_user.role = "organisation_admin"
-        db.add(current_user)
-
     db.commit()
 
     log_audit(

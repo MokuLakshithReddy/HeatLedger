@@ -29,9 +29,10 @@ async def lifespan(app: FastAPI):
     # SEC-04: Validate configuration and fail safely if production invariants violated
     validate_environment()
     
-    # Ensure database schema is initialized
-    Base.metadata.create_all(bind=engine)
-    logger.info("Database schema verified.")
+    # Ensure database schema is initialized in non-production environments; production uses Alembic
+    if settings.ENVIRONMENT != "production":
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database schema verified (non-production).")
     yield
     logger.info("HeatLedger Backend Shutting Down...")
 
@@ -107,6 +108,7 @@ app.include_router(organisations_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 
 @app.get("/health", tags=["Health"])
+@app.get("/api/v1/health", tags=["Health"])
 def public_health_check():
     return {
         "status": "UP",

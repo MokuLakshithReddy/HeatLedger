@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 from backend.app.core.config import settings
 from backend.app.core.env_validator import validate_environment
 from backend.app.core.security import create_access_token, get_password_hash
-from backend.app.models.entities import User, Organisation, Shift, EvidenceReport, ShareGrant, ConsentRecord, utc_now
+from backend.app.models.entities import User, Organisation, Shift, LocationSample, EvidenceReport, ShareGrant, ConsentRecord, utc_now
 from backend.app.services.shift_service import ShiftService
 from backend.app.services.location_service import LocationService
 from backend.app.services.consent_service import ConsentService
@@ -223,7 +223,8 @@ def test_sec_13_demo_seeding_rejected_in_production():
         settings.ENVIRONMENT = old_env
 
 # 14. File path traversal attempts are rejected
-def test_sec_14_path_traversal_attempts_sanitized(client, worker_auth_headers):
+def test_sec_14_path_traversal_attempts_sanitized(client, worker_auth_headers, worker_user, db_session):
+    ConsentService.grant_consent(db_session, worker_user.id, "EARNINGS_PROCESSING")
     csv_bytes = b"Date | Platform | Base | Net\n2026-05-10 | Zomato | 1000 | 1000\n"
     # Filename with path traversal sequences
     files = {"file": ("../../../../etc/passwd.csv", io.BytesIO(csv_bytes), "text/csv")}
@@ -234,3 +235,69 @@ def test_sec_14_path_traversal_attempts_sanitized(client, worker_auth_headers):
     assert ".." not in data["original_filename"]
     assert "/" not in data["original_filename"]
     assert "\\" not in data["original_filename"]
+
+# 15. Earnings upload rejected if no prior consent granted (never silently grant)
+def test_sec_15_upload_rejected_without_prior_earnings_consent(client, worker_b_auth_headers, worker_b_user, db_session):
+    # worker_b has NO consent record at all
+    csv_bytes = b"Date | Platform | Base | Net\n2026-05-10 | Zomato | 1000 | 1000\n"
+    files = {"file": ("statement.csv", io.BytesIO(csv_bytes), "text/csv")}
+    resp = client.post("/api/v1/earnings/uploads", headers=worker_b_auth_headers, files=files)
+    assert resp.status_code == 403
+    assert "explicit prior worker consent required" in resp.json()["detail"].lower()
+
+# 16. Report verify endpoint requires ownership or active share grant
+def test_sec_16_report_verify_endpoint_rejects_unauthorized_third_party(client, worker_auth_headers, worker_b_auth_headers, worker_user, db_session):
+    report = ReportGeneratorService.generate_report(db_session, worker_user.id, utc_now() - timedelta(days=2), utc_now())
+    
+    # Worker A (owner) can verify
+    resp_owner = client.get(f"/api/v1/evidence/reports/{report.id}/verify", headers=worker_auth_headers)
+    assert resp_owner.status_code == 200
+    assert resp_owner.json()["is_intact"] is True
+
+    # Worker B (unauthorized third-party) is rejected
+    resp_other = client.get(f"/api/v1/evidence/reports/{report.id}/verify", headers=worker_b_auth_headers)
+    assert resp_other.status_code == 403
+    assert "access denied" in resp_other.json()["detail"].lower()
+
+# 17. Report file verification enforces size limit
+def test_sec_17_report_verify_file_enforces_size_limit(client):
+    oversized_bytes = b"0" * (10 * 1024 * 1024 + 100) # > 10MB
+    files = {"file": ("huge_report.pdf", io.BytesIO(oversized_bytes), "application/pdf")}
+    resp = client.post("/api/v1/evidence/reports/verify-file", files=files)
+    assert resp.status_code == 413
+    assert "exceeds maximum allowable limit" in resp.json()["detail"]
+
+# 18. Organisation registration does not elevate role before approval
+def test_sec_18_org_registration_does_not_elevate_role_before_approval(client, worker_auth_headers, worker_user, db_session):
+    resp = client.post("/api/v1/organisations", headers=worker_auth_headers, json={
+        "name": "New Pending Union",
+        "slug": "new-pending-union",
+        "contact_email": "pending@union.org",
+        "org_type": "union",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["is_approved"] is False
+
+    # Refresh user - must still be 'worker', NOT elevated before approval!
+    db_session.refresh(worker_user)
+    assert worker_user.role == "worker"
+
+# 19. Account deletion genuinely purges linked records
+def test_sec_19_account_deletion_genuinely_purges_linked_records(client, worker_auth_headers, worker_user, db_session):
+    # Setup worker shift and location sample
+    ConsentService.grant_consent(db_session, worker_user.id, "LOCATION_TRACKING_DURING_SHIFT")
+    shift = ShiftService.start_shift(db_session, worker_user.id, location_tracking_requested=True)
+    shift_id = shift.id
+    LocationService.record_sample(db_session, shift_id, worker_user.id, LocationSampleCreate(latitude=17.4, longitude=78.4, accuracy_meters=5.0))
+
+    # Request deletion
+    resp = client.delete("/api/v1/profiles/me/delete", headers=worker_auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deletion_status"] == "COMPLETED"
+    assert data["purged_records"]["shifts"] >= 1
+    assert data["purged_records"]["location_samples"] >= 1
+
+    # Verify database: shift and location samples are completely gone
+    assert db_session.query(Shift).filter(Shift.worker_id == worker_user.id).count() == 0
+    assert db_session.query(LocationSample).filter(LocationSample.shift_id == shift_id).count() == 0
