@@ -1,0 +1,120 @@
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+from sqlalchemy.orm import Session
+from backend.app.core.config import settings
+from backend.app.core.logging import logger
+from backend.app.models.entities import WeatherObservation, utc_now
+from backend.app.providers.weather.base import BaseWeatherProvider, WeatherObservationDTO
+from backend.app.providers.weather.imd import IMDWeatherProvider
+from backend.app.providers.weather.era5 import ERA5LandProvider
+from backend.app.providers.weather.fixtures import HyderabadDemoProvider
+
+class WeatherProviderService:
+    def __init__(self):
+        self.imd_provider = IMDWeatherProvider()
+        self.era5_provider = ERA5LandProvider()
+        self.demo_provider = HyderabadDemoProvider()
+
+    async def get_current_observation(
+        self, latitude: float, longitude: float, db: Optional[Session] = None
+    ) -> WeatherObservationDTO:
+        # 1. Try official IMD API if configured
+        if settings.IMD_API_KEY:
+            try:
+                obs = await self.imd_provider.get_current_observation(latitude, longitude)
+                if obs:
+                    if db:
+                        self._persist_observation(db, obs)
+                    return obs
+            except Exception as e:
+                logger.warning(f"IMD fetch failed, proceeding to fallback: {e}")
+
+        # 2. Return clearly labeled Hyderabad demonstration fixture
+        demo_obs = await self.demo_provider.get_current_observation(latitude, longitude)
+        if db:
+            self._persist_observation(db, demo_obs)
+        return demo_obs
+
+    async def get_observations_for_range(
+        self,
+        latitude: float,
+        longitude: float,
+        start_time: datetime,
+        end_time: datetime,
+        db: Optional[Session] = None,
+    ) -> List[WeatherObservationDTO]:
+        # Check if we already have observations in DB
+        if db:
+            existing = (
+                db.query(WeatherObservation)
+                .filter(
+                    WeatherObservation.observed_at >= start_time,
+                    WeatherObservation.observed_at <= end_time,
+                )
+                .order_by(WeatherObservation.observed_at.asc())
+                .all()
+            )
+            if existing and len(existing) >= 2:
+                return [
+                    WeatherObservationDTO(
+                        provider_name=e.provider_name,
+                        source_identifier=e.source_identifier,
+                        latitude=e.latitude,
+                        longitude=e.longitude,
+                        spatial_resolution_km=e.spatial_resolution_km,
+                        observed_at=e.observed_at,
+                        temperature_celsius=e.temperature_celsius,
+                        relative_humidity_pct=e.relative_humidity_pct,
+                        heat_index_celsius=e.heat_index_celsius,
+                        wbgt_estimated_celsius=e.wbgt_estimated_celsius,
+                        wind_speed_mps=e.wind_speed_mps,
+                        solar_radiation_wm2=e.solar_radiation_wm2,
+                        confidence_score=e.confidence_score,
+                        data_freshness_status=e.data_freshness_status,
+                        validation_status=e.validation_status,
+                        raw_payload=e.raw_data_payload,
+                    )
+                    for e in existing
+                ]
+
+        # Otherwise fetch from provider (IMD or demo)
+        results = await self.demo_provider.get_observations_for_interval(
+            latitude, longitude, start_time, end_time
+        )
+        if db:
+            for r in results:
+                self._persist_observation(db, r)
+        return results
+
+    def _persist_observation(self, db: Session, dto: WeatherObservationDTO) -> WeatherObservation:
+        model = WeatherObservation(
+            provider_name=dto.provider_name,
+            source_identifier=dto.source_identifier,
+            latitude=dto.latitude,
+            longitude=dto.longitude,
+            spatial_resolution_km=dto.spatial_resolution_km,
+            observed_at=dto.observed_at,
+            ingested_at=utc_now(),
+            temperature_celsius=dto.temperature_celsius,
+            relative_humidity_pct=dto.relative_humidity_pct,
+            heat_index_celsius=dto.heat_index_celsius,
+            wbgt_estimated_celsius=dto.wbgt_estimated_celsius,
+            wind_speed_mps=dto.wind_speed_mps,
+            solar_radiation_wm2=dto.solar_radiation_wm2,
+            confidence_score=dto.confidence_score,
+            data_freshness_status=dto.data_freshness_status,
+            validation_status=dto.validation_status,
+            raw_data_payload=dto.raw_payload,
+        )
+        db.add(model)
+        db.commit()
+        db.refresh(model)
+        return model
+
+    async def get_all_providers_status(self) -> List[Dict[str, Any]]:
+        imd_stat = await self.imd_provider.check_health()
+        era5_stat = await self.era5_provider.check_health()
+        demo_stat = await self.demo_provider.check_health()
+        return [imd_stat, era5_stat, demo_stat]
+
+weather_service = WeatherProviderService()

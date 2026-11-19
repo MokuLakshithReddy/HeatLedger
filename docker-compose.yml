@@ -1,0 +1,60 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    container_name: heatledger_postgis
+    environment:
+      POSTGRES_USER: heatledger_user
+      POSTGRES_PASSWORD: heatledger_pass
+      POSTGRES_DB: heatledger_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heatledger_user -d heatledger_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: heatledger_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://heatledger_user:heatledger_pass@db:5432/heatledger_db
+      APP_SECRET_KEY: dev-docker-secret-key-32-chars-long-minimum-here
+      ENVIRONMENT: development
+      DEMO_MODE: "true"
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: /app/uploads/private
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_uploads:/app/uploads/private
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    container_name: heatledger_web
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
+
+volumes:
+  postgres_data:
+  backend_uploads:
