@@ -26,14 +26,17 @@ def list_organisations(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
+    """List approved organisations that workers can choose to share evidence with."""
     return db.query(Organisation).filter(Organisation.is_approved == True).all()
 
 @router.post("", response_model=OrganisationResponse)
 def register_organisation(
     org_in: OrganisationCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user),
 ):
+    """SEC-02: New organisations default to unapproved (pending review)."""
     existing = db.query(Organisation).filter(Organisation.slug == org_in.slug).first()
     if existing:
         raise HTTPException(status_code=409, detail="Organisation slug already exists")
@@ -44,7 +47,7 @@ def register_organisation(
         contact_email=org_in.contact_email,
         description=org_in.description,
         org_type=org_in.org_type,
-        is_approved=True,
+        is_approved=False, # SEC-02: Always unapproved until system admin verification
     )
     db.add(org)
     db.commit()
@@ -59,7 +62,18 @@ def register_organisation(
         is_active=True,
     )
     db.add(member)
+    
+    # Also assign role to user if not admin
+    if current_user.role == "worker":
+        current_user.role = "organisation_admin"
+        db.add(current_user)
+
     db.commit()
+
+    log_audit(
+        db, current_user.id, "ORG_REGISTERED_PENDING_APPROVAL", "Organisation", org.id,
+        {"name": org.name, "slug": org.slug}, request
+    )
     return org
 
 @router.get("/{org_id}/reports", response_model=List[EvidenceReportResponse])
@@ -68,7 +82,7 @@ def list_shared_reports_for_org(
     db: Session = Depends(get_db),
     current_org_user = Depends(get_current_org_member),
 ):
-    # Verify user belongs to this org
+    # Verify user belongs to this org and org is approved
     user_org_id = OrgService.get_user_organisation_id(db, current_org_user.id)
     if user_org_id != org_id and current_org_user.role != "system_admin":
         raise HTTPException(status_code=403, detail="Forbidden: You can only view reports for your own organisation.")
@@ -82,12 +96,12 @@ def download_shared_report_for_org(
     db: Session = Depends(get_db),
     current_org_user = Depends(get_current_org_member),
 ):
-    # Verify user belongs to org
+    # Verify user belongs to org and org is approved
     user_org_id = OrgService.get_user_organisation_id(db, current_org_user.id)
     if user_org_id != org_id and current_org_user.role != "system_admin":
         raise HTTPException(status_code=403, detail="Forbidden: You can only access reports for your own organisation.")
 
-    # Strictly verify active share grant exists
+    # Strictly verify active share grant exists and is not revoked
     grant = ShareService.verify_org_access_to_report(db, org_id, report_id)
 
     pdf_bytes = ReportGeneratorService.get_report_pdf(db, report_id)

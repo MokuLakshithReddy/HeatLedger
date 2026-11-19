@@ -1,16 +1,22 @@
 """AI Document Extraction Engine
 Uses Gemini API or deterministic layout intelligence to parse multi-platform gig payout statements
 into validated Pydantic structures.
+EARN-03, EARN-04, EARN-05: Eliminates double counting, uses Decimal-safe arithmetic, and validates totals.
 """
 import json
 import re
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 import httpx
 
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.schemas.earnings import ExtractionStructuredResult
+
+def round_money(val: float) -> float:
+    d = Decimal(str(val)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(d)
 
 class EarningsExtractor:
     @staticmethod
@@ -18,7 +24,29 @@ class EarningsExtractor:
         """
         Deterministic, platform-independent extraction heuristics for Indian delivery statements:
         Swiggy, Zomato, Uber, Ola, Porter, Zepto, Blinkit.
+        Strictly prevents double-counting by classifying each line item at most once.
         """
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Check if parser returned an error or notice
+        if raw_text.startswith("[") and ("ERROR" in raw_text or "UNAVAILABLE" in raw_text or "NOTICE" in raw_text):
+            return ExtractionStructuredResult(
+                platform_name="Unidentified Platform",
+                statement_period_start=today,
+                statement_period_end=today,
+                base_earnings=0.0,
+                order_payments=0.0,
+                incentives=0.0,
+                bonuses=0.0,
+                deductions=0.0,
+                penalties=0.0,
+                taxes=0.0,
+                net_amount=0.0,
+                payment_date=today,
+                confidence_score=0.0,
+                source_attribution_notes=f"Extraction failed: {raw_text}",
+            )
+
         lower = raw_text.lower()
         
         # 1. Identify platform
@@ -30,103 +58,126 @@ class EarningsExtractor:
 
         # 2. Extract dates (YYYY-MM-DD or DD/MM/YYYY)
         dates = re.findall(r"\b(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b", raw_text)
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         start_date = dates[0] if len(dates) > 0 else today
         end_date = dates[1] if len(dates) > 1 else start_date
 
-        # 3. Currency / number extraction
-        def find_amount(keywords: list) -> float:
-            for kw in keywords:
-                pattern = rf"{kw}[:\s\-₹Rs\.]*([\d,]+\.?\d*)"
-                match = re.search(pattern, raw_text, re.IGNORECASE)
-                if match:
-                    try:
-                        val = float(match.group(1).replace(",", ""))
-                        return val
-                    except ValueError:
-                        continue
-            return 0.0
+        # 3. Line-by-line single classification to prevent double counting (EARN-04)
+        base_earnings = Decimal("0.0")
+        order_pay = Decimal("0.0")
+        incentives = Decimal("0.0")
+        bonuses = Decimal("0.0")
+        deductions = Decimal("0.0")
+        penalties = Decimal("0.0")
+        taxes = Decimal("0.0")
+        explicit_net = Decimal("0.0")
 
-        base_earnings = find_amount(["base pay", "base earnings", "trip earnings", "order pay", "delivery fee"])
-        order_pay = find_amount(["per order", "order payments", "ride fares"])
-        incentives = find_amount(["incentives", "daily incentive", "weekly incentive", "surge"])
-        bonuses = find_amount(["bonus", "joining bonus", "referral bonus"])
-        deductions = find_amount(["deductions", "penalty", "tcs", "tds deduction", "bag fee"])
-        penalties = find_amount(["penalty", "late cancellation", "complaint penalty"])
-        taxes = find_amount(["tax", "tds", "gst"])
-        net_amount = find_amount(["net pay", "net payout", "total earnings", "transferred to bank", "net amount"])
+        lines = raw_text.splitlines()
+        
+        # Regex to find currency amounts on a line
+        amount_regex = re.compile(r"[:\s\-₹Rs\.]*([\d,]+\.?\d*)")
 
-        # If net amount was not found, calculate from components
-        if net_amount == 0.0 and (base_earnings > 0 or incentives > 0):
-            net_amount = base_earnings + order_pay + incentives + bonuses - deductions - penalties - taxes
+        def extract_first_num(line_str: str) -> Optional[Decimal]:
+            m = re.search(r"(?:₹|rs\.?|inr)?\s*([\d,]+\.?\d+)", line_str, re.IGNORECASE)
+            if m:
+                try:
+                    cleaned = m.group(1).replace(",", "")
+                    val = Decimal(cleaned)
+                    return val if val > Decimal("0") else None
+                except Exception:
+                    return None
+            return None
 
-        confidence = 0.85 if platform != "Gig Platform" and net_amount > 0 else 0.60
+        classified_lines = set()
+
+        for idx, line in enumerate(lines):
+            l = line.lower().strip()
+            if not l or len(l) < 3:
+                continue
+
+            num = extract_first_num(l)
+            if not num:
+                continue
+
+            # Classify into exact category in priority order (EARN-04)
+            if any(k in l for k in ["net payout", "net amount", "total payout", "transferred to bank", "take home", "final amount", "net pay"]):
+                explicit_net = num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["cancellation penalty", "complaint penalty", "fine", "penalty"]) and "no penalty" not in l:
+                penalties += num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["tds", "tcs", "gst", "tax deduction"]):
+                taxes += num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["insurance deduction", "bag fee", "uniform fee", "loan deduction", "deduction"]):
+                deductions += num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["joining bonus", "referral bonus", "milestone bonus", "bonus"]):
+                bonuses += num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["incentive", "daily incentive", "weekly incentive", "surge pay", "rain surge", "peak incentive"]):
+                incentives += num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["order pay", "order payments", "ride fares", "per order fee", "drop pay", "trip pay"]):
+                order_pay += num
+                classified_lines.add(idx)
+            elif any(k in l for k in ["base pay", "base earnings", "trip earnings", "delivery fee", "standard earnings"]):
+                base_earnings += num
+                classified_lines.add(idx)
+
+        # Fallback keyword search across entire document if line-by-line found nothing
+        if base_earnings == Decimal("0") and order_pay == Decimal("0") and incentives == Decimal("0"):
+            def find_global(keywords: list) -> Decimal:
+                for kw in keywords:
+                    pattern = rf"{kw}[:\s\-₹Rs\.]*([\d,]+\.?\d*)"
+                    match = re.search(pattern, raw_text, re.IGNORECASE)
+                    if match:
+                        try:
+                            return Decimal(match.group(1).replace(",", ""))
+                        except Exception:
+                            continue
+                return Decimal("0.0")
+
+            base_earnings = find_global(["base pay", "base earnings", "trip earnings", "delivery fee"])
+            order_pay = find_global(["per order", "order payments", "ride fares"])
+            incentives = find_global(["daily incentive", "weekly incentive", "surge pay", "incentive"])
+            bonuses = find_global(["joining bonus", "referral bonus", "bonus"])
+            deductions = find_global(["bag fee", "uniform fee", "insurance deduction", "deductions"])
+            penalties = find_global(["cancellation penalty", "complaint penalty", "penalty"])
+            taxes = find_global(["tds", "tcs", "gst", "tax"])
+            explicit_net = find_global(["net payout", "net amount", "total payout", "transferred to bank", "net pay"])
+
+        # EARN-05: Decimal calculation of net earnings
+        calculated_net = base_earnings + order_pay + incentives + bonuses - deductions - penalties - taxes
+        if explicit_net > Decimal("0.0"):
+            final_net = explicit_net
+        else:
+            final_net = max(Decimal("0.0"), calculated_net)
+
+        discrepancy_note = ""
+        if explicit_net > Decimal("0.0") and abs(explicit_net - calculated_net) > Decimal("1.0"):
+            discrepancy_note = (
+                f" Note: Stated net (₹{explicit_net}) differs from sum of components (₹{calculated_net}). "
+                f"Worker review and confirmation is recommended."
+            )
+
+        confidence = 0.90 if platform != "Gig Platform" and final_net > Decimal("0.0") else 0.65
 
         return ExtractionStructuredResult(
             platform_name=platform,
             statement_period_start=start_date,
             statement_period_end=end_date,
-            base_earnings=round(base_earnings, 2),
-            order_payments=round(order_pay, 2),
-            incentives=round(incentives, 2),
-            bonuses=round(bonuses, 2),
-            deductions=round(deductions, 2),
-            penalties=round(penalties, 2),
-            taxes=round(taxes, 2),
-            net_amount=round(net_amount, 2),
+            base_earnings=round_money(float(base_earnings)),
+            order_payments=round_money(float(order_pay)),
+            incentives=round_money(float(incentives)),
+            bonuses=round_money(float(bonuses)),
+            deductions=round_money(float(deductions)),
+            penalties=round_money(float(penalties)),
+            taxes=round_money(float(taxes)),
+            net_amount=round_money(float(final_net)),
             payment_date=end_date,
             confidence_score=confidence,
-            source_attribution_notes=f"Extracted deterministically from document text ({filename}). Requires worker verification.",
+            source_attribution_notes=(
+                f"Extracted deterministically from document text ({filename})."
+                f"{discrepancy_note} Worker verification required."
+            ),
         )
-
-    @staticmethod
-    async def extract_structured_data(
-        raw_text: str, filename: str
-    ) -> ExtractionStructuredResult:
-        # If Gemini API Key is available, invoke structured extraction
-        if settings.GEMINI_API_KEY:
-            try:
-                prompt = f"""
-                You are a senior financial document auditor extracting gig worker payout information from Indian delivery statements (e.g. Swiggy, Zomato, Uber, Zepto).
-                Extract the fields into JSON matching this exact structure:
-                {{
-                    "platform_name": "String",
-                    "statement_period_start": "YYYY-MM-DD",
-                    "statement_period_end": "YYYY-MM-DD",
-                    "base_earnings": 0.0,
-                    "order_payments": 0.0,
-                    "incentives": 0.0,
-                    "bonuses": 0.0,
-                    "deductions": 0.0,
-                    "penalties": 0.0,
-                    "taxes": 0.0,
-                    "net_amount": 0.0,
-                    "payment_date": "YYYY-MM-DD or null",
-                    "confidence_score": 0.95,
-                    "source_attribution_notes": "Summary of extracted line items"
-                }}
-                CRITICAL RULES:
-                - Never invent missing amounts. If absent, set to 0.0.
-                - Document: {filename}
-                - Raw Text Content:
-                {raw_text[:4000]}
-                """
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.LLM_MODEL_NAME}:generateContent?key={settings.GEMINI_API_KEY}"
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"response_mime_type": "application/json"},
-                }
-                async with httpx.AsyncClient(timeout=15.0) as client:
-                    resp = await client.post(url, json=payload)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        raw_json_str = data["candidates"][0]["content"]["parts"][0]["text"]
-                        parsed = json.loads(raw_json_str)
-                        return ExtractionStructuredResult(**parsed)
-                    else:
-                        logger.warning(f"Gemini API returned {resp.status_code}: {resp.text}")
-            except Exception as e:
-                logger.error(f"Gemini LLM extraction failed: {e}. Falling back to deterministic heuristics.")
-
-        # Fallback to deterministic regex parser
-        return EarningsExtractor.parse_with_heuristics(raw_text, filename)

@@ -156,7 +156,7 @@ def test_scenario_3_correlation_and_pdf_report_download(client):
     assert download_resp.headers["x-report-integrity-sha256"] == sha256_hash
     assert len(download_resp.content) > 1000
 
-def test_scenario_4_sharing_and_revocation_enforcement(client):
+def test_scenario_4_sharing_and_revocation_enforcement(client, admin_user):
     """Scenario 4: Worker shares report with org → org opens it → worker revokes access → org can no longer open it."""
     # Register worker
     w_resp = client.post("/api/v1/auth/register", json={
@@ -168,12 +168,12 @@ def test_scenario_4_sharing_and_revocation_enforcement(client):
     w_token = w_resp.json()["access_token"]
     w_headers = {"Authorization": f"Bearer {w_token}"}
 
-    # Register Org Officer
+    # Register Org Officer as worker account (SEC-01)
     org_user_resp = client.post("/api/v1/auth/register", json={
         "email": "caseworker@hyd.org",
         "phone": "+919100000044",
         "password": "StrongPassword123!",
-        "role": "organisation_admin",
+        "role": "worker",
     })
     org_token = org_user_resp.json()["access_token"]
     org_headers = {"Authorization": f"Bearer {org_token}"}
@@ -185,6 +185,12 @@ def test_scenario_4_sharing_and_revocation_enforcement(client):
         json={"name": "Hyderabad Delivery Union", "slug": "hyd-delivery-union", "contact_email": "union@hyd.org"},
     )
     org_id = org_resp.json()["id"]
+
+    # SEC-02: Administrator approves the organisation for worker evidence sharing
+    from backend.app.core.security import create_access_token
+    admin_token = create_access_token({"sub": admin_user.id, "role": "system_admin", "email": admin_user.email})
+    appr_resp = client.post(f"/api/v1/admin/organisations/{org_id}/approve", headers={"Authorization": f"Bearer {admin_token}"})
+    assert appr_resp.status_code == 200
 
     # Worker generates report
     now = datetime.now(timezone.utc)

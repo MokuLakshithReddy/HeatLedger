@@ -28,21 +28,11 @@ export default function ShiftsScreen() {
     try {
       const summary = await mobileApiFetch<any>("/shifts/active");
       if (summary) setActiveShift(summary.active_shift);
-      const list = await mobileApiFetch<any[]>("/shifts?limit=15");
+      const list = await mobileApiFetch<any[]>("/shifts?limit=20");
       if (list) setShifts(list);
-    } catch (e) {
-      // Local fallback
-      setShifts([
-        {
-          id: "demo-shift-1",
-          status: "COMPLETED",
-          started_at: "2026-05-18T10:00:00Z",
-          ended_at: "2026-05-18T17:00:00Z",
-          total_working_minutes: 375,
-          total_break_minutes: 45,
-          location_tracking_enabled: true,
-        },
-      ]);
+    } catch (e: any) {
+      console.warn("Could not load shifts:", e);
+      setShifts([]);
     }
   }
 

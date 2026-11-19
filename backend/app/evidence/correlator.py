@@ -8,11 +8,11 @@ Constructs an immutable, traceable, chronological evidence timeline across:
 - Document uploads
 - Confirmed earnings records
 - Analytical flags
+EVID-07: Uses stable deterministic event identifiers derived from underlying database entities.
 """
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
-import uuid
 
 from backend.app.models.entities import (
     Shift,
@@ -22,8 +22,10 @@ from backend.app.models.entities import (
     ExposureInterval,
     EarningsUpload,
     EarningEntry,
+    EvidenceReport,
 )
 from backend.app.schemas.evidence import EvidenceTimelineEventResponse, EvidenceTimelineResponse
+from backend.app.core.datetime_utils import ensure_utc
 
 LIMITATIONS_DISCLAIMER = (
     "DISCLAIMER & INTEGRITY NOTICE: HeatLedger evidence records compile worker-declared actions, "
@@ -44,13 +46,16 @@ class EvidenceCorrelator:
         events: List[EvidenceTimelineEventResponse] = []
         flags: List[str] = []
 
+        st = ensure_utc(start_time)
+        et = ensure_utc(end_time)
+
         # 1. Shifts (WORKER_ACTION)
         shifts = (
             db.query(Shift)
             .filter(
                 Shift.worker_id == worker_id,
-                Shift.started_at >= start_time,
-                Shift.started_at <= end_time,
+                Shift.started_at >= st,
+                Shift.started_at <= et,
             )
             .order_by(Shift.started_at.asc())
             .all()
@@ -58,9 +63,9 @@ class EvidenceCorrelator:
         for s in shifts:
             events.append(
                 EvidenceTimelineEventResponse(
-                    id=str(uuid.uuid4()),
+                    id=f"shift-start-{s.id}",
                     event_category="WORKER_ACTION",
-                    timestamp=s.started_at,
+                    timestamp=ensure_utc(s.started_at),
                     title="Shift Started",
                     description=f"Worker initiated shift (Status: {s.status}). Location tracking: {'Enabled' if s.location_tracking_enabled else 'Disabled'}.",
                     provenance_source=f"Shift record ID: {s.id}",
@@ -73,9 +78,9 @@ class EvidenceCorrelator:
             if s.ended_at:
                 events.append(
                     EvidenceTimelineEventResponse(
-                        id=str(uuid.uuid4()),
+                        id=f"shift-end-{s.id}",
                         event_category="WORKER_ACTION",
-                        timestamp=s.ended_at,
+                        timestamp=ensure_utc(s.ended_at),
                         title="Shift Concluded",
                         description=f"Worker ended shift. Total working: {s.total_working_minutes} mins, Breaks: {s.total_break_minutes} mins.",
                         provenance_source=f"Shift record ID: {s.id}",
@@ -99,9 +104,9 @@ class EvidenceCorrelator:
         for b in breaks:
             events.append(
                 EvidenceTimelineEventResponse(
-                    id=str(uuid.uuid4()),
+                    id=f"break-start-{b.id}",
                     event_category="WORKER_DECLARED_BREAK",
-                    timestamp=b.started_at,
+                    timestamp=ensure_utc(b.started_at),
                     title=f"Worker Rest Break ({b.break_type})",
                     description=f"Worker declared {b.break_type.lower()} break for {b.duration_minutes} minutes. Notes: {b.worker_notes or 'None'}.",
                     provenance_source=f"BreakEvent ID: {b.id}",
@@ -126,9 +131,9 @@ class EvidenceCorrelator:
         for loc in location_samples:
             events.append(
                 EvidenceTimelineEventResponse(
-                    id=str(uuid.uuid4()),
+                    id=f"location-{loc.id}",
                     event_category="LOCATION_OBSERVATION",
-                    timestamp=loc.recorded_at,
+                    timestamp=ensure_utc(loc.recorded_at),
                     title="Consented Location Fix",
                     description=f"Recorded position (Accuracy: {loc.accuracy_meters}m).",
                     provenance_source=f"LocationSample ID: {loc.id}",
@@ -157,9 +162,9 @@ class EvidenceCorrelator:
 
             events.append(
                 EvidenceTimelineEventResponse(
-                    id=str(uuid.uuid4()),
+                    id=f"exposure-{exp.id}",
                     event_category="ESTIMATED_EXPOSURE",
-                    timestamp=exp.start_time,
+                    timestamp=ensure_utc(exp.start_time),
                     title=f"Heat Exposure: {exp.risk_category}",
                     description=(
                         f"Calculated Heat Index: {exp.heat_index_celsius}°C (Ambient: {exp.mean_temperature_celsius}°C, "
@@ -183,17 +188,17 @@ class EvidenceCorrelator:
             db.query(EarningsUpload)
             .filter(
                 EarningsUpload.worker_id == worker_id,
-                EarningsUpload.uploaded_at >= start_time,
-                EarningsUpload.uploaded_at <= end_time,
+                EarningsUpload.uploaded_at >= st,
+                EarningsUpload.uploaded_at <= et,
             )
             .all()
         )
         for up in uploads:
             events.append(
                 EvidenceTimelineEventResponse(
-                    id=str(uuid.uuid4()),
+                    id=f"upload-{up.id}",
                     event_category="DOCUMENT_UPLOAD",
-                    timestamp=up.uploaded_at,
+                    timestamp=ensure_utc(up.uploaded_at),
                     title="Earnings Statement Uploaded",
                     description=f"Uploaded {up.original_filename} ({up.file_type.upper()}, {up.file_size_bytes} bytes). SHA-256: {up.sha256_hash[:16]}...",
                     provenance_source=f"EarningsUpload ID: {up.id}",
@@ -208,8 +213,8 @@ class EvidenceCorrelator:
             db.query(EarningEntry)
             .filter(
                 EarningEntry.worker_id == worker_id,
-                EarningEntry.created_at >= start_time,
-                EarningEntry.created_at <= end_time,
+                EarningEntry.created_at >= st,
+                EarningEntry.created_at <= et,
             )
             .all()
         )
@@ -217,9 +222,9 @@ class EvidenceCorrelator:
             cat = "WORKER_CONFIRMED_VALUE" if ent.is_confirmed_by_worker else "AI_EXTRACTED_VALUE"
             events.append(
                 EvidenceTimelineEventResponse(
-                    id=str(uuid.uuid4()),
+                    id=f"earning-{ent.id}",
                     event_category=cat,
-                    timestamp=ent.created_at,
+                    timestamp=ensure_utc(ent.created_at),
                     title=f"Platform Payout: {ent.platform_name} (₹{ent.net_amount})",
                     description=(
                         f"Net payout ₹{ent.net_amount} (Base: ₹{ent.base_earnings}, Incentives: ₹{ent.incentives}, "
@@ -234,14 +239,39 @@ class EvidenceCorrelator:
                 )
             )
 
-        # Sort all timeline events chronologically
-        from backend.app.core.datetime_utils import ensure_utc
-        events.sort(key=lambda e: ensure_utc(e.timestamp))
+        # 6. Generated Reports
+        reports = (
+            db.query(EvidenceReport)
+            .filter(
+                EvidenceReport.worker_id == worker_id,
+                EvidenceReport.created_at >= st,
+                EvidenceReport.created_at <= et,
+            )
+            .all()
+        )
+        for r in reports:
+            events.append(
+                EvidenceTimelineEventResponse(
+                    id=f"report-{r.id}",
+                    event_category="EVIDENCE_REPORT_GENERATED",
+                    timestamp=ensure_utc(r.created_at),
+                    title=f"Evidence Dossier Compiled ({r.report_number})",
+                    description=f"Generated report covering {r.total_hours_worked} working hours, {r.total_extreme_heat_hours} danger heat hours. SHA-256: {r.integrity_sha256[:16]}...",
+                    provenance_source=f"EvidenceReport ID: {r.id}",
+                    metadata={
+                        "report_number": r.report_number,
+                        "integrity_sha256": r.integrity_sha256,
+                    },
+                )
+            )
+
+        # Sort all timeline events chronologically and deterministically
+        events.sort(key=lambda e: (ensure_utc(e.timestamp), e.id))
 
         return EvidenceTimelineResponse(
             worker_id=worker_id,
-            period_start=start_time,
-            period_end=end_time,
+            period_start=st,
+            period_end=et,
             events_count=len(events),
             events=events,
             flags_detected=flags,

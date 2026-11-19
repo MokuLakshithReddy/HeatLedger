@@ -6,18 +6,22 @@ from sqlalchemy.orm import Session
 from fastapi import HTTPException, status, UploadFile
 
 from backend.app.core.config import settings
+from backend.app.core.storage import get_storage_provider
 from backend.app.core.logging import logger
-from backend.app.models.entities import EarningsUpload, EarningEntry, ProcessingJob, utc_now
-from backend.app.earnings.parsers import extract_raw_text
+from backend.app.models.entities import EarningsUpload, EarningEntry, ProcessingJob, ConsentRecord, utc_now
+from backend.app.earnings.parsers import extract_raw_text, validate_magic_bytes
 from backend.app.earnings.extractor import EarningsExtractor
 from backend.app.schemas.earnings import EarningEntryConfirmRequest
+from backend.app.services.consent_service import ConsentService
 
 ALLOWED_EXTENSIONS = {"pdf", "jpg", "jpeg", "png", "csv"}
 
 class EarningsPipeline:
     @staticmethod
     def _ensure_storage_dir(worker_id: str) -> str:
-        target_dir = os.path.join(settings.LOCAL_STORAGE_DIR, worker_id)
+        # Prevent path traversal in worker_id
+        safe_worker_id = "".join(c for c in worker_id if c.isalnum() or c in "-_")
+        target_dir = os.path.join(settings.LOCAL_STORAGE_DIR, safe_worker_id)
         os.makedirs(target_dir, exist_ok=True)
         return target_dir
 
@@ -27,13 +31,37 @@ class EarningsPipeline:
         worker_id: str,
         file: UploadFile,
     ) -> Tuple[EarningsUpload, EarningEntry]:
+        # EARN-06: Check if worker has explicitly revoked consent for earnings processing
+        latest_consent = (
+            db.query(ConsentRecord)
+            .filter(
+                ConsentRecord.user_id == worker_id,
+                ConsentRecord.purpose.in_(["EARNINGS_DOCUMENT_EXTRACTION", "EARNINGS_PROCESSING"]),
+            )
+            .order_by(ConsentRecord.created_at.desc())
+            .first()
+        )
+        if latest_consent and not latest_consent.is_granted:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Processing rejected: Worker has explicitly revoked consent for 'earnings_processing'.",
+            )
+        
+        # If no consent record exists yet, record initial document processing consent
+        if not latest_consent:
+            ConsentService.grant_consent(
+                db, worker_id, "EARNINGS_DOCUMENT_EXTRACTION", consent_text_version="1.0-upload"
+            )
+
         # 1. Validate file extension
-        filename = file.filename or "statement.pdf"
+        raw_filename = file.filename or "statement.pdf"
+        # Prevent path traversal
+        filename = os.path.basename(raw_filename).replace("..", "")
         ext = filename.split(".")[-1].lower() if "." in filename else ""
         if ext not in ALLOWED_EXTENSIONS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported file type '.{ext}'. Allowed types: {list(ALLOWED_EXTENSIONS)}",
+                detail=f"Unsupported file type '.{ext}'. Allowed types: {sorted(list(ALLOWED_EXTENSIONS))}",
             )
 
         # 2. Read contents and validate size
@@ -43,15 +71,27 @@ class EarningsPipeline:
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail=f"File exceeds maximum allowed size of {settings.MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB",
             )
+        if len(contents) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Empty file upload: 0 bytes received.",
+            )
+
+        # EARN-07: Magic bytes verification to prevent MIME spoofing
+        if not validate_magic_bytes(contents, ext):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File validation failed: Magic byte header does not match declared '.{ext}' format.",
+            )
 
         # 3. Calculate SHA-256 hash
         sha256_hash = hashlib.sha256(contents).hexdigest()
 
         # 4. Save to private storage
-        target_dir = EarningsPipeline._ensure_storage_dir(worker_id)
-        storage_path = os.path.join(target_dir, f"{sha256_hash}.{ext}")
-        with open(storage_path, "wb") as f:
-            f.write(contents)
+        storage = get_storage_provider()
+        safe_worker_id = "".join(c for c in worker_id if c.isalnum() or c in "-_")
+        rel_path = f"{safe_worker_id}/{sha256_hash}.{ext}"
+        storage_path = storage.save_file(rel_path, contents)
 
         # 5. Create upload record
         upload = EarningsUpload(
@@ -71,7 +111,7 @@ class EarningsPipeline:
         # 6. Extract text & structured AI fields
         try:
             raw_text = extract_raw_text(contents, ext)
-            extracted_data = await EarningsExtractor.extract_structured_data(raw_text, filename)
+            extracted_data = EarningsExtractor.parse_with_heuristics(raw_text, filename)
 
             # Parse start and end dates
             try:
@@ -116,7 +156,6 @@ class EarningsPipeline:
         except Exception as e:
             logger.error(f"Extraction pipeline failed: {str(e)}")
             upload.upload_status = "FAILED"
-            upload.processing_error = str(e)
             db.commit()
             db.refresh(upload)
             raise HTTPException(

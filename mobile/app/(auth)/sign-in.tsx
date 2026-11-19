@@ -7,26 +7,47 @@ import {
   TouchableOpacity,
   SafeAreaView,
   Alert,
+  ActivityIndicator,
 } from "react-native";
 import { router } from "expo-router";
 import { mobileApiFetch } from "@/lib/api";
+import { SessionStore } from "@/lib/store";
 
 export default function SignInScreen() {
-  const [emailOrPhone, setEmailOrPhone] = useState("demo.worker@heatledger.local");
-  const [password, setPassword] = useState("DemoWorker123!");
+  const [emailOrPhone, setEmailOrPhone] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
 
   const handleSignIn = async () => {
+    if (!emailOrPhone.trim() || !password) {
+      Alert.alert("Missing Fields", "Please enter your email or phone number and password.");
+      return;
+    }
+
+    setLoading(true);
     try {
       const isEmail = emailOrPhone.includes("@");
-      const body = isEmail ? { email: emailOrPhone, password } : { phone: emailOrPhone, password };
-      await mobileApiFetch("/auth/login", {
+      const body = isEmail ? { email: emailOrPhone.trim(), password } : { phone: emailOrPhone.trim(), password };
+      
+      const authData = await mobileApiFetch<any>("/auth/login", {
         method: "POST",
         body: JSON.stringify(body),
       });
+
+      // Save verified authenticated session
+      SessionStore.set({
+        token: authData.access_token,
+        userId: authData.user_id,
+        fullName: authData.user_id,
+        role: authData.role,
+        language: authData.preferred_language || "en",
+      });
+
       router.replace("/(tabs)");
     } catch (e: any) {
-      // Allow demo sign in
-      router.replace("/(tabs)");
+      Alert.alert("Authentication Failed", e.message || "Invalid credentials. Please verify your details.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -46,8 +67,9 @@ export default function SignInScreen() {
             style={styles.input}
             value={emailOrPhone}
             onChangeText={setEmailOrPhone}
-            placeholder="e.g. +91 9876543210"
+            placeholder="e.g. worker@example.com or +91 9876543210"
             autoCapitalize="none"
+            editable={!loading}
           />
 
           <Text style={styles.label}>Password</Text>
@@ -57,18 +79,27 @@ export default function SignInScreen() {
             onChangeText={setPassword}
             placeholder="••••••••"
             secureTextEntry
+            editable={!loading}
           />
 
-          <TouchableOpacity style={styles.submitBtn} onPress={handleSignIn}>
-            <Text style={styles.submitBtnText}>Sign In</Text>
+          <TouchableOpacity
+            style={[styles.button, loading && styles.buttonDisabled]}
+            onPress={handleSignIn}
+            disabled={loading}
+          >
+            {loading ? (
+              <ActivityIndicator color="#ffffff" />
+            ) : (
+              <Text style={styles.buttonText}>Sign In to HeatLedger</Text>
+            )}
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.switchAuth}
-            onPress={() => router.push("/(auth)/sign-up")}
-          >
-            <Text style={styles.switchAuthText}>New user? Create a worker account</Text>
-          </TouchableOpacity>
+          <View style={styles.footerLinkContainer}>
+            <Text style={styles.footerText}>New to HeatLedger? </Text>
+            <TouchableOpacity onPress={() => router.push("/(auth)/sign-up")}>
+              <Text style={styles.linkText}>Register Account</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     </SafeAreaView>
@@ -76,37 +107,34 @@ export default function SignInScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#f8fafc" },
+  safeArea: { flex: 1, backgroundColor: "#0f172a" },
   container: { flex: 1, padding: 24, justifyContent: "center" },
-  header: { alignItems: "center", marginBottom: 32 },
-  brandTitle: { fontSize: 32, fontWeight: "900", color: "#0284c7" },
-  tagline: { fontSize: 13, color: "#64748b", marginTop: 4 },
-  formCard: {
-    backgroundColor: "#ffffff",
-    padding: 24,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  formTitle: { fontSize: 18, fontWeight: "800", color: "#0f172a", marginBottom: 16 },
-  label: { fontSize: 12, fontWeight: "700", color: "#475569", marginBottom: 6 },
+  header: { marginBottom: 32, alignItems: "center" },
+  brandTitle: { fontSize: 32, fontWeight: "800", color: "#f97316", letterSpacing: 0.5 },
+  tagline: { fontSize: 14, color: "#94a3b8", marginTop: 6, textAlign: "center" },
+  formCard: { backgroundColor: "#1e293b", padding: 24, borderRadius: 16, borderWidth: 1, borderColor: "#334155" },
+  formTitle: { fontSize: 20, fontWeight: "700", color: "#f8fafc", marginBottom: 20 },
+  label: { fontSize: 13, fontWeight: "600", color: "#cbd5e1", marginBottom: 6 },
   input: {
-    backgroundColor: "#f8fafc",
+    backgroundColor: "#0f172a",
     borderWidth: 1,
-    borderColor: "#e2e8f0",
+    borderColor: "#334155",
     borderRadius: 8,
     padding: 12,
-    fontSize: 14,
+    color: "#f8fafc",
+    fontSize: 15,
     marginBottom: 16,
   },
-  submitBtn: {
-    backgroundColor: "#0284c7",
-    paddingVertical: 14,
+  button: {
+    backgroundColor: "#f97316",
+    padding: 14,
     borderRadius: 8,
     alignItems: "center",
     marginTop: 8,
   },
-  submitBtnText: { color: "#ffffff", fontWeight: "700", fontSize: 15 },
-  switchAuth: { marginTop: 16, alignItems: "center" },
-  switchAuthText: { fontSize: 12, color: "#0284c7", fontWeight: "600" },
+  buttonDisabled: { opacity: 0.6 },
+  buttonText: { color: "#ffffff", fontSize: 16, fontWeight: "700" },
+  footerLinkContainer: { flexDirection: "row", justifyContent: "center", marginTop: 20 },
+  footerText: { color: "#94a3b8", fontSize: 14 },
+  linkText: { color: "#38bdf8", fontSize: 14, fontWeight: "600" },
 });

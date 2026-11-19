@@ -26,35 +26,49 @@ interface CohortData {
   anonymity_notice: string;
 }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+
 export default function AnalyticsPage() {
   const [lang, setLang] = useState<Language>("en");
   const t = translations[lang];
 
   const [cohort, setCohort] = useState<CohortData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [needsAuth, setNeedsAuth] = useState(false);
 
   useEffect(() => {
     async function fetchAnalytics() {
-      try {
-        const loginResp = await fetch("http://localhost:8000/api/v1/auth/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            email: "advocate@telanganaworkers.org",
-            password: "TelanganaUnion123!",
-          }),
-        });
+      const token = typeof window !== "undefined"
+        ? (sessionStorage.getItem("hl_portal_token") || sessionStorage.getItem("hl_admin_token"))
+        : null;
 
-        if (loginResp.ok) {
-          const { access_token } = await loginResp.json();
-          const orgsResp = await fetch("http://localhost:8000/api/v1/organisations", {
-            headers: { Authorization: `Bearer ${access_token}` },
-          });
+      if (!token) {
+        setNeedsAuth(true);
+        setCohort({
+          cohort_name: "Hyderabad Central & Hitec City Cohort (Preview)",
+          total_workers_in_cohort: 4,
+          meets_k_anonymity_threshold: false,
+          k_threshold: 5,
+          average_heat_exposure_hours: null,
+          average_shift_duration_hours: null,
+          total_cases_filed: 0,
+          common_high_heat_time_bands: ["12:00 PM - 03:00 PM", "03:00 PM - 05:00 PM"],
+          anonymity_notice: "Cohort size (k = 4) is below the minimum privacy threshold (k ≥ 5). Detailed analytics suppressed to prevent worker re-identification.",
+        });
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const orgsResp = await fetch(`${API_BASE}/organisations`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (orgsResp.ok) {
           const orgs = await orgsResp.json();
           if (orgs.length > 0) {
             const orgId = orgs[0].id;
-            const res = await fetch(`http://localhost:8000/api/v1/organisations/${orgId}/analytics`, {
-              headers: { Authorization: `Bearer ${access_token}` },
+            const res = await fetch(`${API_BASE}/organisations/${orgId}/analytics`, {
+              headers: { Authorization: `Bearer ${token}` },
             });
             if (res.ok) {
               const data = await res.json();
@@ -63,7 +77,7 @@ export default function AnalyticsPage() {
           }
         }
       } catch (err) {
-        console.warn("Could not fetch live analytics, using fallback state.", err);
+        console.warn("Could not fetch live analytics:", err);
       } finally {
         setLoading(false);
       }

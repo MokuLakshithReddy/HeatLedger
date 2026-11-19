@@ -17,37 +17,59 @@ import { mobileApiFetch } from "@/lib/api";
 export default function WorkerDashboard() {
   const [lang, setLang] = useState<Language>("te"); // Default Telugu for Hyderabad workers
   const t = translations[lang];
+  const user = SessionStore.get();
 
   const [activeShift, setActiveShift] = useState<any>(null);
   const [todayWorkMins, setTodayWorkMins] = useState(0);
   const [todayBreakMins, setTodayBreakMins] = useState(0);
   const [weatherObs, setWeatherObs] = useState<any>({
-    temp: 41.2,
-    rh: 36,
-    hi: 47.8,
-    wbgt: 31.8,
-    risk: "EXTREME_DANGER",
-    station: "Begumpet Observatory",
-    freshness: "DEMO_SAMPLE",
+    temp: 40.0,
+    rh: 35,
+    hi: 45.0,
+    wbgt: 31.0,
+    risk: "DANGER",
+    station: "Hyderabad Central",
+    freshness: "LIVE_ESTIMATE",
   });
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    // Attempt to fetch active shift from backend
-    async function loadDashboard() {
-      try {
-        const data = await mobileApiFetch<any>("/shifts/active");
-        if (data) {
-          setActiveShift(data.active_shift);
-          setTodayWorkMins(data.today_working_minutes);
-          setTodayBreakMins(data.today_break_minutes);
-        }
-      } catch (err) {
-        console.log("Operating in offline/demo mode");
-      }
+    if (!SessionStore.get()) {
+      router.replace("/(auth)/sign-in");
+      return;
     }
     loadDashboard();
   }, []);
+
+  async function loadDashboard() {
+    try {
+      const data = await mobileApiFetch<any>("/shifts/active");
+      if (data) {
+        setActiveShift(data.active_shift);
+        setTodayWorkMins(data.today_working_minutes || 0);
+        setTodayBreakMins(data.today_break_minutes || 0);
+      }
+    } catch (err: any) {
+      console.warn("Failed to load active shift", err);
+    }
+
+    try {
+      const climate = await mobileApiFetch<any>("/climate/current?latitude=17.3850&longitude=78.4867");
+      if (climate) {
+        setWeatherObs({
+          temp: climate.temperature_c,
+          rh: climate.relative_humidity_pct,
+          hi: climate.heat_index_c,
+          wbgt: climate.swbgt_proxy_c,
+          risk: climate.risk_category,
+          station: climate.station_name || "Begumpet Observatory",
+          freshness: climate.freshness_indicator || "ACCURATE",
+        });
+      }
+    } catch (err: any) {
+      console.warn("Failed to load live climate", err);
+    }
+  }
 
   const handleStartShift = async () => {
     setLoading(true);
@@ -58,14 +80,9 @@ export default function WorkerDashboard() {
       });
       setActiveShift(newShift);
       Alert.alert("Shift Started", "Your work and climate exposure are being recorded.");
+      loadDashboard();
     } catch (e: any) {
-      // Mock local state if backend unreachable
-      setActiveShift({
-        id: "local-shift-1",
-        status: "ACTIVE",
-        started_at: new Date().toISOString(),
-        location_tracking_enabled: true,
-      });
+      Alert.alert("Shift Error", e.message || "Failed to start shift");
     } finally {
       setLoading(false);
     }
@@ -78,12 +95,17 @@ export default function WorkerDashboard() {
       await mobileApiFetch<any>(`/shifts/${activeShift.id}/end`, { method: "POST" });
       setActiveShift(null);
       Alert.alert("Shift Concluded", "Your working hours have been saved to your timeline.");
+      loadDashboard();
     } catch (e: any) {
-      setActiveShift(null);
+      Alert.alert("Error Ending Shift", e.message || "Failed to end shift");
     } finally {
       setLoading(false);
     }
   };
+
+  const greeting = user?.fullName
+    ? (lang === "te" ? `నమస్కారం, ${user.fullName} గారు` : (lang === "hi" ? `नमस्ते, ${user.fullName}` : `Welcome, ${user.fullName}`))
+    : (lang === "te" ? "నమస్కారం కార్మికుడు" : "Welcome Worker");
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -92,7 +114,7 @@ export default function WorkerDashboard() {
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.appName}>{t.app_title}</Text>
-            <Text style={styles.workerGreeting}>నమస్కారం, రాజు గారు (Raju K.)</Text>
+            <Text style={styles.workerGreeting}>{greeting}</Text>
           </View>
           <View style={styles.langSelector}>
             {(["te", "hi", "en"] as Language[]).map((l) => (

@@ -1,4 +1,3 @@
-import { useState, useEffect } from "react";
 import { Language } from "./i18n";
 
 export interface UserSession {
@@ -9,18 +8,24 @@ export interface UserSession {
   language: Language;
 }
 
-// In-memory / persistent session store for React Native
-let currentSession: UserSession | null = {
-  token: "mock-worker-token",
-  userId: "demo-worker-id",
-  fullName: "Raju K. (Swiggy Partner)",
-  role: "worker",
-  language: "te", // Default Telugu
-};
+// In-memory session store (Starts strictly null - unauthenticated by default)
+let currentSession: UserSession | null = null;
+let listeners: Array<(s: UserSession | null) => void> = [];
 
 export const SessionStore = {
-  get: () => currentSession,
+  get: (): UserSession | null => currentSession,
   set: (s: UserSession | null) => {
     currentSession = s;
+    listeners.forEach((l) => l(currentSession));
+  },
+  clear: () => {
+    currentSession = null;
+    listeners.forEach((l) => l(null));
+  },
+  subscribe: (listener: (s: UserSession | null) => void) => {
+    listeners.push(listener);
+    return () => {
+      listeners = listeners.filter((l) => l !== listener);
+    };
   },
 };

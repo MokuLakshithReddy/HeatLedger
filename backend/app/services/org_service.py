@@ -32,8 +32,17 @@ class OrgService:
         if not member:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="User is not an active member of any approved organisation",
+                detail="User is not an active member of any organisation",
             )
+        
+        # Verify organisation is approved
+        org = db.query(Organisation).filter(Organisation.id == member.organisation_id).first()
+        if not org or not org.is_approved:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organisation is pending administrative verification and approval. Access to worker data is restricted.",
+            )
+
         return member.organisation_id
 
     @staticmethod
@@ -72,23 +81,30 @@ class OrgService:
         if not grant:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot create a case for a report not actively shared with your organisation.",
+                detail="Cannot create case: No active, non-revoked worker share grant exists for this report",
             )
 
-        # Generate case number and worker pseudonym
+        report = db.query(EvidenceReport).filter(EvidenceReport.id == case_in.report_id).first()
+        if not report:
+            raise HTTPException(status_code=404, detail="Referenced report not found")
+
         case_count = db.query(Case).filter(Case.organisation_id == organisation_id).count()
         case_number = f"CASE-{datetime.now(timezone.utc).strftime('%Y%m')}-{case_count + 1:04d}"
-        pseudonym = f"Worker-{grant.worker_id[:6].upper()}"
+
+        # Pseudonymize worker identifier for union record handling
+        worker_pseudonym = f"Worker-{report.worker_id[:8]}"
 
         new_case = Case(
             organisation_id=organisation_id,
             report_id=case_in.report_id,
+            worker_pseudonym=worker_pseudonym,
             case_number=case_number,
             title=case_in.title,
-            priority=case_in.priority,
-            status="OPEN",
-            worker_pseudonym=pseudonym,
+            description=case_in.description,
+            status=case_in.status or "OPEN",
+            priority=case_in.priority or "MEDIUM",
             created_at=utc_now(),
+            updated_at=utc_now(),
         )
         db.add(new_case)
         db.commit()
@@ -99,22 +115,19 @@ class OrgService:
     def add_case_note(
         db: Session,
         case_id: str,
-        user_id: str,
+        author_user_id: str,
         organisation_id: str,
         note_in: CaseNoteCreate,
     ) -> CaseNote:
-        case = (
-            db.query(Case)
-            .filter(Case.id == case_id, Case.organisation_id == organisation_id)
-            .first()
-        )
+        case = db.query(Case).filter(Case.id == case_id, Case.organisation_id == organisation_id).first()
         if not case:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Case record not found")
+            raise HTTPException(status_code=404, detail="Case not found in your organisation")
 
         note = CaseNote(
             case_id=case_id,
-            author_user_id=user_id,
-            note_content=note_in.note_content,
+            author_user_id=author_user_id,
+            note_text=note_in.note_text,
+            is_internal_only=note_in.is_internal_only,
             created_at=utc_now(),
         )
         db.add(note)
@@ -133,18 +146,17 @@ class OrgService:
         
         # Get count of distinct workers who shared active reports with this org
         now = utc_now()
-        active_worker_ids = [
-            row[0] for row in (
-                db.query(ShareGrant.worker_id)
-                .filter(
-                    ShareGrant.organisation_id == organisation_id,
-                    ShareGrant.is_revoked == False,
-                    ShareGrant.expires_at > now,
-                )
-                .distinct()
-                .all()
+        active_grants = (
+            db.query(ShareGrant)
+            .filter(
+                ShareGrant.organisation_id == organisation_id,
+                ShareGrant.is_revoked == False,
+                ShareGrant.expires_at > now,
             )
-        ]
+            .all()
+        )
+        active_worker_ids = list(set(g.worker_id for g in active_grants))
+        shared_report_ids = list(set(g.report_id for g in active_grants))
         cohort_size = len(active_worker_ids)
 
         if cohort_size < k_min:
@@ -164,10 +176,24 @@ class OrgService:
                 ),
             )
 
-        # If cohort meets k-anonymity threshold, compute aggregates safely
+        # PRIV-02: Strictly query ONLY reports that have been explicitly shared with this organisation!
+        # Never query unshared reports of active workers.
+        if not shared_report_ids:
+            return AggregateCohortAnalytics(
+                cohort_name=cohort_name,
+                total_workers_in_cohort=cohort_size,
+                meets_k_anonymity_threshold=True,
+                k_threshold=k_min,
+                average_heat_exposure_hours=0.0,
+                average_shift_duration_hours=0.0,
+                total_cases_filed=db.query(Case).filter(Case.organisation_id == organisation_id).count(),
+                common_high_heat_time_bands=["13:00 - 16:30 IST (Peak Solar/HI Danger)"],
+                anonymity_notice="Privacy criteria satisfied: Aggregate metrics calculated from explicitly shared reports only.",
+            )
+
         reports = (
             db.query(EvidenceReport)
-            .filter(EvidenceReport.worker_id.in_(active_worker_ids))
+            .filter(EvidenceReport.id.in_(shared_report_ids))
             .all()
         )
         avg_heat = (
@@ -188,5 +214,5 @@ class OrgService:
             average_shift_duration_hours=round(avg_shift, 1),
             total_cases_filed=db.query(Case).filter(Case.organisation_id == organisation_id).count(),
             common_high_heat_time_bands=["13:00 - 16:30 IST (Peak Solar/HI Danger)"],
-            anonymity_notice="Privacy criteria satisfied: Aggregate metrics calculated with k-anonymity safeguards.",
+            anonymity_notice="Privacy criteria satisfied: Aggregate metrics calculated with k-anonymity safeguards from authorized shared reports.",
         )

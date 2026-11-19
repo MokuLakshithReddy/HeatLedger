@@ -129,6 +129,25 @@ def org_user_and_org(db_session):
     return user, org
 
 @pytest.fixture
+def admin_user(db_session):
+    admin = db_session.query(User).filter(User.email == "admin@heatledger.local").first()
+    if not admin:
+        admin = User(
+            id="admin-system-test-id",
+            email="admin@heatledger.local",
+            phone="+919000000000",
+            hashed_password=get_password_hash("AdminPass123!"),
+            full_name="System Administrator",
+            role="system_admin",
+            preferred_language="en",
+            is_active=True,
+        )
+        db_session.add(admin)
+        db_session.commit()
+        db_session.refresh(admin)
+    return admin
+
+@pytest.fixture
 def worker_auth_headers(worker_user):
     token = create_access_token({"sub": worker_user.id, "role": worker_user.role, "email": worker_user.email})
     return {"Authorization": f"Bearer {token}"}

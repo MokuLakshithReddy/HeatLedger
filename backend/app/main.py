@@ -7,6 +7,7 @@ import time
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.core.database import engine, Base
+from backend.app.core.env_validator import validate_environment
 import backend.app.models # register all SQLAlchemy entities
 
 # Routers
@@ -25,7 +26,10 @@ from backend.app.api.v1.admin import router as admin_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("HeatLedger Backend Starting Up...")
-    # Ensure database tables exist (fallback if migrations not executed)
+    # SEC-04: Validate configuration and fail safely if production invariants violated
+    validate_environment()
+    
+    # Ensure database schema is initialized
     Base.metadata.create_all(bind=engine)
     logger.info("Database schema verified.")
     yield
@@ -39,21 +43,31 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
-    openapi_url="/api/v1/openapi.json",
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/api/v1/openapi.json" if settings.DEBUG else None,
 )
 
-# CORS Middleware
+# SEC-06: Strict CORS Configuration
+cors_origins = settings.CORS_ORIGINS if isinstance(settings.CORS_ORIGINS, list) else [settings.CORS_ORIGINS]
+allow_creds = True
+if "*" in cors_origins:
+    if settings.ENVIRONMENT == "production":
+        # Disallow wildcard origin with credentials in production
+        cors_origins = ["https://heatledger.app", "https://app.heatledger.org"]
+    else:
+        allow_creds = False # Browsers reject credentials=True with wildcard origin
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # In production, restrict to verified frontend origins
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=cors_origins,
+    allow_credentials=allow_creds,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
+    expose_headers=["Content-Disposition", "X-Report-Integrity-SHA256", "X-Process-Time-Sec"],
 )
 
-# Security Headers Middleware
+# SEC-06: Production Security Headers Middleware
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     start_time = time.time()
@@ -63,40 +77,39 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; frame-ancestors 'none';"
     response.headers["X-Process-Time-Sec"] = f"{process_time:.4f}"
     return response
 
 # Global Exception Handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {str(exc)}", exc_info=True)
+    logger.error(f"Unhandled server error on {request.method} {request.url.path}: {str(exc)}", exc_info=True)
+    # Never leak internal tracebacks in response
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An internal server error occurred. This event has been securely audited."},
+        content={"detail": "An internal server error occurred. This incident has been logged for review."},
     )
 
-# Versioned API Router inclusion
-API_V1_PREFIX = "/api/v1"
-app.include_router(auth_router, prefix=API_V1_PREFIX)
-app.include_router(profiles_router, prefix=API_V1_PREFIX)
-app.include_router(shifts_router, prefix=API_V1_PREFIX)
-app.include_router(breaks_router, prefix=API_V1_PREFIX)
-app.include_router(location_router, prefix=API_V1_PREFIX)
-app.include_router(climate_router, prefix=API_V1_PREFIX)
-app.include_router(earnings_router, prefix=API_V1_PREFIX)
-app.include_router(evidence_router, prefix=API_V1_PREFIX)
-app.include_router(shares_router, prefix=API_V1_PREFIX)
-app.include_router(organisations_router, prefix=API_V1_PREFIX)
-app.include_router(admin_router, prefix=API_V1_PREFIX)
+# Include v1 Routers
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(profiles_router, prefix="/api/v1")
+app.include_router(shifts_router, prefix="/api/v1")
+app.include_router(breaks_router, prefix="/api/v1")
+app.include_router(location_router, prefix="/api/v1")
+app.include_router(climate_router, prefix="/api/v1")
+app.include_router(earnings_router, prefix="/api/v1")
+app.include_router(evidence_router, prefix="/api/v1")
+app.include_router(shares_router, prefix="/api/v1")
+app.include_router(organisations_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 
-@app.get("/")
-def root_info():
+@app.get("/health", tags=["Health"])
+def public_health_check():
     return {
-        "platform": "HeatLedger",
-        "tagline": "Your work. Your conditions. Your evidence.",
-        "version": "1.0.0",
-        "jurisdiction": "Hyderabad, Telangana, India",
-        "docs_url": "/docs",
-        "api_v1": "/api/v1",
+        "status": "UP",
+        "service": "HeatLedger API",
+        "environment": settings.ENVIRONMENT,
     }

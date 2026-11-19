@@ -17,6 +17,9 @@ def register_user(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    # SEC-01: Public registration strictly creates worker role
+    assigned_role = "worker"
+    
     # Check if email or phone already exists
     if reg_in.email:
         existing = db.query(User).filter(User.email == reg_in.email).first()
@@ -33,7 +36,7 @@ def register_user(
         phone=reg_in.phone,
         hashed_password=hashed_pw,
         full_name=reg_in.full_name,
-        role=reg_in.role,
+        role=assigned_role,
         preferred_language=reg_in.preferred_language,
         is_active=True,
         created_at=utc_now(),
@@ -43,19 +46,18 @@ def register_user(
     db.commit()
     db.refresh(user)
 
-    # If worker, create worker profile
-    if user.role == "worker":
-        profile = WorkerProfile(
-            user_id=user.id,
-            primary_platforms=reg_in.primary_platforms or [],
-            vehicle_type=reg_in.vehicle_type,
-            city=reg_in.city or "Hyderabad",
-            consented_location_tracking=False, # Disabled by default until explicit consent
-            created_at=utc_now(),
-            updated_at=utc_now(),
-        )
-        db.add(profile)
-        db.commit()
+    # Worker profile
+    profile = WorkerProfile(
+        user_id=user.id,
+        primary_platforms=reg_in.primary_platforms or [],
+        vehicle_type=reg_in.vehicle_type,
+        city=reg_in.city or "Hyderabad",
+        consented_location_tracking=False, # Disabled by default until explicit consent
+        created_at=utc_now(),
+        updated_at=utc_now(),
+    )
+    db.add(profile)
+    db.commit()
 
     log_audit(db, user.id, "USER_REGISTERED", "User", user.id, {"role": user.role}, request)
 
@@ -83,10 +85,11 @@ def login_user(
     elif login_in.phone:
         user = db.query(User).filter(User.phone == login_in.phone).first()
 
+    # SEC-05: Uniform error to prevent account enumeration
     if not user or not verify_password(login_in.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
+            detail="Invalid email/phone or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
@@ -106,3 +109,7 @@ def login_user(
         role=user.role,
         preferred_language=user.preferred_language,
     )
+
+@router.get("/me", response_model=UserResponse)
+def get_current_user_profile(current_user: User = Depends(get_current_user)):
+    return current_user

@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response, Request, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
+import hashlib
 
 from backend.app.core.database import get_db
 from backend.app.models.entities import EvidenceReport
@@ -95,3 +96,63 @@ def download_report_pdf(
             "X-Report-Integrity-SHA256": report.integrity_sha256 if report else "",
         },
     )
+
+@router.get("/reports/{report_id}/verify")
+def verify_report_integrity(
+    report_id: str,
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """EVID-01: Verifies the integrity of a generated report against stored SHA-256."""
+    report = db.query(EvidenceReport).filter(EvidenceReport.id == report_id).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    pdf_bytes = ReportGeneratorService.get_report_pdf(db, report_id)
+    calculated_sha256 = hashlib.sha256(pdf_bytes).hexdigest()
+    is_valid = calculated_sha256.lower() == report.integrity_sha256.lower()
+
+    return {
+        "report_id": report.id,
+        "report_number": report.report_number,
+        "is_intact": is_valid,
+        "stored_sha256": report.integrity_sha256,
+        "byte_calculated_sha256": calculated_sha256,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+        "verification_explanation": (
+            "Cryptographic SHA-256 integrity match confirms document has not been altered since generation. "
+            "Integrity verifies bit-level stability; it does not independently verify external source claims."
+        ),
+    }
+
+@router.post("/reports/verify-file")
+async def verify_uploaded_report_pdf(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """EVID-01: Publicly verifiable endpoint to verify any HeatLedger PDF by file upload."""
+    contents = await file.read()
+    file_sha256 = hashlib.sha256(contents).hexdigest()
+
+    matching_report = (
+        db.query(EvidenceReport)
+        .filter(EvidenceReport.integrity_sha256 == file_sha256)
+        .first()
+    )
+
+    if matching_report:
+        return {
+            "verified": True,
+            "report_number": matching_report.report_number,
+            "report_id": matching_report.id,
+            "created_at": matching_report.created_at.isoformat(),
+            "sha256": file_sha256,
+            "status": "VALID_AUTHENTIC_HEATLEDGER_DOCUMENT",
+        }
+    else:
+        return {
+            "verified": False,
+            "sha256": file_sha256,
+            "status": "UNRECOGNIZED_OR_ALTERED_DOCUMENT",
+            "message": "The uploaded PDF hash does not match any registered HeatLedger evidence report.",
+        }
