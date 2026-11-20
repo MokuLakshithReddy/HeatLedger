@@ -31,6 +31,10 @@ def downgrade() -> None:
     if bind.dialect.name == "postgresql":
         op.execute("""
         DROP POLICY IF EXISTS user_self_isolation ON users;
+        DROP POLICY IF EXISTS user_select ON users;
+        DROP POLICY IF EXISTS user_register_insert ON users;
+        DROP POLICY IF EXISTS user_update ON users;
+        DROP POLICY IF EXISTS user_delete ON users;
         DROP POLICY IF EXISTS worker_profile_isolation ON worker_profiles;
         DROP POLICY IF EXISTS worker_consent_isolation ON consent_records;
         DROP POLICY IF EXISTS worker_shift_isolation ON shifts;
@@ -43,6 +47,8 @@ def downgrade() -> None:
         DROP POLICY IF EXISTS worker_report_isolation ON evidence_reports;
         DROP POLICY IF EXISTS org_shared_reports_access ON evidence_reports;
         DROP POLICY IF EXISTS report_sources_access ON report_sources;
+        DROP POLICY IF EXISTS report_sources_insert ON report_sources;
+        DROP POLICY IF EXISTS report_sources_delete ON report_sources;
         DROP POLICY IF EXISTS worker_share_grants_isolation ON share_grants;
         DROP POLICY IF EXISTS org_share_grants_read ON share_grants;
         DROP POLICY IF EXISTS org_cases_select ON cases;

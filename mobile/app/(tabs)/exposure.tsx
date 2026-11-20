@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
 } from "react-native";
 import { mobileApiFetch } from "@/lib/api";
+import * as Location from "expo-location";
 
 interface ExposureData {
   temp: number;
@@ -41,7 +42,24 @@ export default function ExposureScreen() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res = await mobileApiFetch<any>("/climate/current?latitude=17.3850&longitude=78.4867");
+      let lat = 17.3850;
+      let lon = 78.4867;
+      let hasRealGps = false;
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status === "granted") {
+          const currentPos = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          if (currentPos) {
+            lat = currentPos.coords.latitude;
+            lon = currentPos.coords.longitude;
+            hasRealGps = true;
+          }
+        }
+      } catch (locErr) {
+        // Fall back to regional coordinates
+      }
+
+      const res = await mobileApiFetch<any>(`/climate/current?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`);
       if (res && res.temperature_celsius !== undefined) {
         setExposureData({
           temp: res.temperature_c ?? res.temperature_celsius,

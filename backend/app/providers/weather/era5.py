@@ -20,7 +20,7 @@ from backend.app.climate.wbgt_proxy import calculate_simplified_wbgt_proxy
 def kelvin_to_celsius(k: float) -> float:
     return round(k - 273.15, 2)
 
-def calculate_rh_from_dewpoint(temp_c: float, dewpoint_c: float) -> float:
+def calculate_rh_from_dewpoint(temp_c: float, dewpoint_c: float) -> Optional[float]:
     """Computes relative humidity from dry bulb and dewpoint temperature using Magnus-Tetens approximation."""
     try:
         a = 17.27
@@ -30,7 +30,7 @@ def calculate_rh_from_dewpoint(temp_c: float, dewpoint_c: float) -> float:
         rh = 100.0 * math.exp(beta - alpha)
         return max(0.0, min(100.0, round(rh, 1)))
     except Exception:
-        return 50.0
+        return None
 
 class ERA5LandProvider(BaseWeatherProvider):
     def __init__(self):
@@ -145,6 +145,9 @@ class ERA5LandProvider(BaseWeatherProvider):
             temp_c = kelvin_to_celsius(temp_k)
             dew_c = kelvin_to_celsius(dew_k)
             rh_pct = calculate_rh_from_dewpoint(temp_c, dew_c)
+            if rh_pct is None:
+                logger.warning("ERA5 relative humidity could not be computed from dewpoint; skipping invalid record.")
+                continue
 
             u_wind = float(item.get("10m_u_component_of_wind", item.get("u10", 0.0)))
             v_wind = float(item.get("10m_v_component_of_wind", item.get("v10", 0.0)))

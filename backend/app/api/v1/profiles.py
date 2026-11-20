@@ -299,8 +299,11 @@ def request_account_deletion(
     for up in uploads:
         if up.stored_filepath:
             try:
-                storage.delete_file(up.stored_filepath)
-                files_purged += 1
+                res = storage.delete_file(up.stored_filepath)
+                if res is True:
+                    files_purged += 1
+                else:
+                    failed_files.append(up.stored_filepath)
             except Exception as e:
                 failed_files.append(up.stored_filepath)
                 logger.warning(f"Could not purge upload file {up.stored_filepath}: {e}")
@@ -311,8 +314,11 @@ def request_account_deletion(
     for rep in reports:
         if rep.pdf_storage_path:
             try:
-                storage.delete_file(rep.pdf_storage_path)
-                files_purged += 1
+                res = storage.delete_file(rep.pdf_storage_path)
+                if res is True:
+                    files_purged += 1
+                else:
+                    failed_files.append(rep.pdf_storage_path)
             except Exception as e:
                 failed_files.append(rep.pdf_storage_path)
                 logger.warning(f"Could not purge report file {rep.pdf_storage_path}: {e}")

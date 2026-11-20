@@ -9,11 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/requirements.txt .
-RUN pip install --no-cache-dir --user -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Final runtime image
 FROM python:3.12-slim AS runner
@@ -22,7 +21,6 @@ WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/home/heatledger/.local/bin:${PATH}" \
     PYTHONPATH="/app"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 -s /bin/bash heatledger
 
-COPY --from=builder /root/.local /home/heatledger/.local
+COPY --from=builder /install /usr/local
 COPY --chown=heatledger:heatledger . /app
 
 # Ensure storage directories exist with non-root ownership

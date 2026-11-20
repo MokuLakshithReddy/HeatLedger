@@ -98,7 +98,7 @@ export default function ReportsScreen() {
       }
     } else {
       // Create share with first approved org
-      const targetOrg = organisations.find((o) => o.is_approved) || organisations[0];
+      const targetOrg = organisations.find((o) => o.is_approved);
       if (!targetOrg) {
         Alert.alert("No Organisations", "No approved worker organisations available to share with.");
         return;
@@ -175,7 +175,7 @@ export default function ReportsScreen() {
           <View style={styles.reportsList}>
             {reports.map((r) => {
               const isShared = shares.some(
-                (s) => s.report_id === r.id && s.is_active && !s.revoked_at
+                (s) => s.report_id === r.id && !s.is_revoked && new Date(s.expires_at) > new Date()
               );
 
               return (

@@ -22,9 +22,47 @@ class TestPostgreSQLRowLevelSecurity:
     @pytest.fixture(scope="class")
     def pg_engine(self):
         url = os.getenv("POSTGRES_TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or settings.DATABASE_URL
-        engine = create_engine(url, echo=False)
-        yield engine
-        engine.dispose()
+        base_engine = create_engine(url, echo=False)
+
+        # Check if the connecting role is a superuser (e.g. default POSTGRES_USER in Docker)
+        # PostgreSQL superusers bypass RLS policies even with FORCE RLS.
+        # We ensure tests execute under a restricted non-superuser role with NOBYPASSRLS.
+        try:
+            with base_engine.connect() as conn:
+                is_super = conn.execute(text("SELECT usesuper FROM pg_user WHERE usename = current_user")).scalar()
+                if is_super:
+                    conn.execute(text("""
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'heatledger_restricted_app_user') THEN
+                                CREATE ROLE heatledger_restricted_app_user WITH LOGIN PASSWORD 'restricted_pass_123' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+                            END IF;
+                        END
+                        $$;
+                        GRANT USAGE ON SCHEMA public TO heatledger_restricted_app_user;
+                        GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO heatledger_restricted_app_user;
+                        GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO heatledger_restricted_app_user;
+                        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO heatledger_restricted_app_user;
+                        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO heatledger_restricted_app_user;
+                    """))
+                    conn.commit()
+
+                    from urllib.parse import urlparse, urlunparse
+                    parsed = urlparse(url)
+                    host = parsed.hostname or "localhost"
+                    port = parsed.port or 5432
+                    dbname = parsed.path.lstrip("/")
+                    restricted_url = f"{parsed.scheme}://heatledger_restricted_app_user:restricted_pass_123@{host}:{port}/{dbname}"
+                    restricted_engine = create_engine(restricted_url, echo=False)
+                    yield restricted_engine
+                    restricted_engine.dispose()
+                    base_engine.dispose()
+                    return
+        except Exception:
+            pass
+
+        yield base_engine
+        base_engine.dispose()
 
     @pytest.fixture
     def pg_session(self, pg_engine):
@@ -33,6 +71,13 @@ class TestPostgreSQLRowLevelSecurity:
         yield session
         session.rollback()
         session.close()
+
+    def test_database_role_is_restricted_non_superuser(self, pg_session):
+        """Verifies the active database role enforces RLS (NOSUPERUSER, NOBYPASSRLS)."""
+        res = pg_session.execute(text("SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user")).fetchone()
+        if res:
+            assert res[0] is False, "Active role for RLS tests must not be a superuser"
+            assert res[1] is False, "Active role for RLS tests must have NOBYPASSRLS"
 
     def test_missing_identity_fails_closed(self, pg_session):
         """Anonymous queries without session identity must return 0 rows under RLS."""
@@ -124,5 +169,68 @@ class TestPostgreSQLRowLevelSecurity:
                 INSERT INTO cases (id, organisation_id, report_id, case_number, title, status, priority, worker_pseudonym, created_at, updated_at)
                 VALUES ('case-violating-rls', :oid, 'dummy-rep', 'CASE-001', 'Test', 'OPEN', 'MEDIUM', 'Worker-1', NOW(), NOW())
             """), {"oid": org_id})
+            pg_session.commit()
+        assert "row-level security" in str(exc_info.value).lower() or "policy" in str(exc_info.value).lower()
+
+    def test_unauthenticated_login_lookup_allowed(self, pg_session):
+        """Unauthenticated requests (session identity NULL) can query user credentials for auth."""
+        worker_id = "worker-auth-rls-test"
+        pg_session.execute(text("SELECT set_config('app.current_user_id', 'admin', true)"))
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'system_admin', true)"))
+        pg_session.execute(text("""
+            INSERT INTO users (id, email, hashed_password, role, preferred_language, is_active, created_at, updated_at)
+            VALUES (:uid, 'login_test@worker.org', 'test_hash', 'worker', 'en', true, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"uid": worker_id})
+        pg_session.commit()
+
+        # Switch to unauthenticated state (NULL / empty session identity)
+        pg_session.execute(text("SELECT set_config('app.current_user_id', '', true)"))
+        pg_session.execute(text("SELECT set_config('app.current_user_role', '', true)"))
+
+        user_row = pg_session.execute(text("SELECT id, email, hashed_password FROM users WHERE email = 'login_test@worker.org'")).fetchone()
+        assert user_row is not None
+        assert user_row[0] == worker_id
+
+    def test_report_source_insert_and_isolation(self, pg_session):
+        """Report owner can insert report sources; other workers cannot."""
+        worker_a = "worker-rep-a"
+        worker_b = "worker-rep-b"
+        rep_a = "rep-a-rls-test"
+
+        # Seed users and report as admin
+        pg_session.execute(text("SELECT set_config('app.current_user_id', 'admin', true)"))
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'system_admin', true)"))
+        for uid in [worker_a, worker_b]:
+            pg_session.execute(text("""
+                INSERT INTO users (id, hashed_password, role, preferred_language, is_active, created_at, updated_at)
+                VALUES (:uid, 'hash', 'worker', 'en', true, NOW(), NOW())
+                ON CONFLICT (id) DO NOTHING
+            """), {"uid": uid})
+        pg_session.execute(text("""
+            INSERT INTO evidence_reports (id, worker_id, report_number, period_start, period_end, integrity_sha256, limitations_disclaimer, created_at)
+            VALUES (:rid, :wid, 'REP-RLS-001', NOW() - INTERVAL '1 day', NOW(), 'sha256hash', 'disclaimer', NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"rid": rep_a, "wid": worker_a})
+        pg_session.commit()
+
+        # Worker A (owner) can insert report source
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": worker_a})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', true)"))
+        pg_session.execute(text("""
+            INSERT INTO report_sources (id, report_id, source_type, source_id, created_at)
+            VALUES ('src-a-owner', :rid, 'SHIFT', 'shift-1', NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"rid": rep_a})
+        pg_session.commit()
+
+        # Worker B (non-owner) attempting to insert source for Worker A's report must fail under RLS
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": worker_b})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', true)"))
+        with pytest.raises(Exception) as exc_info:
+            pg_session.execute(text("""
+                INSERT INTO report_sources (id, report_id, source_type, source_id, created_at)
+                VALUES ('src-b-violating', :rid, 'SHIFT', 'shift-2', NOW())
+            """), {"rid": rep_a})
             pg_session.commit()
         assert "row-level security" in str(exc_info.value).lower() or "policy" in str(exc_info.value).lower()

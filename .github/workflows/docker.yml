@@ -29,14 +29,39 @@ jobs:
         run: |
           docker compose up -d
           echo "Waiting for services to become healthy..."
+          HEALTHY=0
           for i in {1..30}; do
-            if curl -sf http://localhost:8000/api/v1/health > /dev/null; then
+            if curl -sf http://localhost:8000/api/v1/health | grep '"status":"UP"'; then
               echo "Backend health check passed!"
+              HEALTHY=1
               break
             fi
             sleep 2
           done
-          curl -sf http://localhost:8000/api/v1/health | grep '"status":"UP"'
-          curl -sf http://localhost:3000 > /dev/null
+
+          if [ $HEALTHY -ne 1 ]; then
+            echo "::error::Backend service failed to become healthy. Dumping container state and logs:"
+            docker compose ps -a
+            docker compose logs
+            exit 1
+          fi
+
+          echo "Verifying Next.js web service..."
+          WEB_HEALTHY=0
+          for i in {1..15}; do
+            if curl -sf http://localhost:3000 > /dev/null; then
+              echo "Web service health check passed!"
+              WEB_HEALTHY=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ $WEB_HEALTHY -ne 1 ]; then
+            echo "::error::Web service failed to respond. Dumping logs:"
+            docker compose logs web
+            exit 1
+          fi
+
           echo "Web and Backend container services validated successfully!"
           docker compose down

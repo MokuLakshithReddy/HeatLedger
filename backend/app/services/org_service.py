@@ -100,8 +100,7 @@ class OrgService:
             worker_pseudonym=worker_pseudonym,
             case_number=case_number,
             title=case_in.title,
-            description=case_in.description,
-            status=case_in.status or "OPEN",
+            status="OPEN",
             priority=case_in.priority or "MEDIUM",
             created_at=utc_now(),
             updated_at=utc_now(),
@@ -126,9 +125,9 @@ class OrgService:
         note = CaseNote(
             case_id=case_id,
             author_user_id=author_user_id,
-            note_text=note_in.note_text,
-            is_internal_only=note_in.is_internal_only,
+            note_content=note_in.note_content,
             created_at=utc_now(),
+            updated_at=utc_now(),
         )
         db.add(note)
         db.commit()

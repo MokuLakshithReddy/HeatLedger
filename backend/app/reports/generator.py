@@ -77,7 +77,7 @@ class ReportGeneratorService:
             e for e in exposures if e.risk_category in ["DANGER", "EXTREME_DANGER"]
         ]
         total_extreme_heat_hours = round(
-            sum(e.duration_minutes for e in extreme_heat_intervals) / 60.0, 2
+            sum(((e.end_time - e.start_time).total_seconds() / 60.0) for e in extreme_heat_intervals) / 60.0, 2
         )
 
         # 3. Fetch earnings entries

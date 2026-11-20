@@ -30,7 +30,10 @@ class IMDWeatherProvider(BaseWeatherProvider):
             logger.info("IMD API key not configured; skipping live IMD fetch.")
             return None
 
-        endpoint = f"{self.base_url}/api/v1/current_wx"
+        clean_base = self.base_url.rstrip("/")
+        if clean_base.endswith("/api"):
+            clean_base = clean_base[:-4]
+        endpoint = f"{clean_base}/api/v1/current_wx"
         headers = {"X-Api-Key": self.api_key, "Accept": "application/json"}
         params = {"lat": str(latitude), "lon": str(longitude)}
 
@@ -39,7 +42,7 @@ class IMDWeatherProvider(BaseWeatherProvider):
                 response = await client.get(endpoint, headers=headers, params=params)
                 # Fallback to aws_data if current_wx not present
                 if response.status_code == 404:
-                    response = await client.get(f"{self.base_url}/api/v1/aws_data", headers=headers, params=params)
+                    response = await client.get(f"{clean_base}/api/v1/aws_data", headers=headers, params=params)
 
                 if response.status_code == 200:
                     data = response.json()
@@ -81,7 +84,20 @@ class IMDWeatherProvider(BaseWeatherProvider):
                         except Exception:
                             pass
                     if not observed_at:
-                        observed_at = datetime.now(timezone.utc)
+                        logger.warning("IMD observation missing verified source timestamp; rejecting unverified observation.")
+                        return None
+
+                    station_lat = data.get("LAT") or data.get("latitude") or data.get("lat")
+                    station_lon = data.get("LON") or data.get("longitude") or data.get("lon")
+                    if station_lat is None or station_lon is None:
+                        logger.warning("IMD station observation missing verifiable station coordinates; returning None.")
+                        return None
+                    try:
+                        st_lat = float(station_lat)
+                        st_lon = float(station_lon)
+                    except (ValueError, TypeError):
+                        logger.warning("IMD station coordinates unparseable; returning None.")
+                        return None
 
                     station_id = str(
                         data.get("STATION_NAME")
@@ -95,8 +111,8 @@ class IMDWeatherProvider(BaseWeatherProvider):
                         provider_name=self.provider_name,
                         source_identifier=station_id,
                         data_type="DIRECT_STATION_OBSERVATION",
-                        latitude=float(data.get("lat", latitude)),
-                        longitude=float(data.get("lon", longitude)),
+                        latitude=st_lat,
+                        longitude=st_lon,
                         spatial_resolution_km=10.0,
                         observed_at=observed_at,
                         temperature_celsius=temp_c,

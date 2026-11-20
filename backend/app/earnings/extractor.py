@@ -145,7 +145,21 @@ class EarningsExtractor:
                 f"Worker review and confirmation is recommended."
             )
 
-        confidence = 0.90 if platform != "Gig Platform" and final_net > Decimal("0.0") else 0.65
+        has_any_earnings = (
+            base_earnings > Decimal("0.0")
+            or order_pay > Decimal("0.0")
+            or incentives > Decimal("0.0")
+            or bonuses > Decimal("0.0")
+            or explicit_net > Decimal("0.0")
+        )
+
+        if not has_any_earnings:
+            confidence = 0.10
+            discrepancy_note += " Warning: No recognized monetary amounts found in statement."
+        else:
+            confidence = 0.90 if platform != "Gig Platform" and final_net > Decimal("0.0") else 0.65
+
+        date_inferred = len(dates) == 0
 
         return ExtractionStructuredResult(
             platform_name=platform,
@@ -163,6 +177,54 @@ class EarningsExtractor:
             confidence_score=confidence,
             source_attribution_notes=(
                 f"Extracted deterministically from document text ({filename})."
-                f"{discrepancy_note} Worker verification required."
+                f"{discrepancy_note}"
+                f"{' Note: Dates were inferred.' if date_inferred else ''} Worker verification required."
             ),
         )
+
+    @classmethod
+    async def extract(cls, raw_text: str, filename: str) -> ExtractionStructuredResult:
+        """
+        Extracts structured earnings data. Uses Google Gemini API if configured,
+        falling back seamlessly to robust heuristic classification.
+        """
+        if settings.GEMINI_API_KEY and settings.LLM_PROVIDER in ["gemini", "google"]:
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.LLM_MODEL_NAME}:generateContent?key={settings.GEMINI_API_KEY}"
+                prompt = (
+                    "Extract structured financial payout fields from this Indian gig worker earnings statement into JSON. "
+                    "Fields required: platform_name (Swiggy, Zomato, Uber, Ola, etc.), statement_period_start (YYYY-MM-DD), "
+                    "statement_period_end (YYYY-MM-DD), base_earnings (float), order_payments (float), incentives (float), "
+                    "bonuses (float), deductions (float), penalties (float), taxes (float), net_amount (float). "
+                    "Ensure no double counting. Return pure JSON object only."
+                )
+                payload = {
+                    "contents": [{"parts": [{"text": f"{prompt}\n\nDocument Text:\n{raw_text[:4000]}"}]}],
+                    "generationConfig": {"response_mime_type": "application/json"}
+                }
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        text_resp = data["candidates"][0]["content"]["parts"][0]["text"]
+                        parsed = json.loads(text_resp)
+                        return ExtractionStructuredResult(
+                            platform_name=parsed.get("platform_name", "Gig Platform"),
+                            statement_period_start=parsed.get("statement_period_start", datetime.now(timezone.utc).strftime("%Y-%m-%d")),
+                            statement_period_end=parsed.get("statement_period_end", datetime.now(timezone.utc).strftime("%Y-%m-%d")),
+                            base_earnings=round_money(float(parsed.get("base_earnings", 0.0))),
+                            order_payments=round_money(float(parsed.get("order_payments", 0.0))),
+                            incentives=round_money(float(parsed.get("incentives", 0.0))),
+                            bonuses=round_money(float(parsed.get("bonuses", 0.0))),
+                            deductions=round_money(float(parsed.get("deductions", 0.0))),
+                            penalties=round_money(float(parsed.get("penalties", 0.0))),
+                            taxes=round_money(float(parsed.get("taxes", 0.0))),
+                            net_amount=round_money(float(parsed.get("net_amount", 0.0))),
+                            payment_date=parsed.get("statement_period_end"),
+                            confidence_score=0.95,
+                            source_attribution_notes=f"Extracted with Gemini AI model ({settings.LLM_MODEL_NAME}). Worker verification required.",
+                        )
+            except Exception as e:
+                logger.warning(f"Gemini API extraction failed, falling back to heuristics: {e}")
+
+        return cls.parse_with_heuristics(raw_text, filename)

@@ -1,0 +1,13 @@
+backend/venv
+.pytest_cache
+__pycache__
+*.pyc
+.git
+.github
+node_modules
+mobile/node_modules
+mobile/.expo
+web/node_modules
+web/.next
+uploads/private/*
+!uploads/private/.gitkeep

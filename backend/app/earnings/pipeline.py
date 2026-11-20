@@ -32,24 +32,23 @@ class EarningsPipeline:
         file: UploadFile,
     ) -> Tuple[EarningsUpload, EarningEntry]:
         # EARN-06: Require explicit prior consent for earnings processing (never silently grant on upload)
-        latest_consent = (
-            db.query(ConsentRecord)
-            .filter(
-                ConsentRecord.user_id == worker_id,
-                ConsentRecord.purpose.in_(["EARNINGS_DOCUMENT_EXTRACTION", "EARNINGS_PROCESSING"]),
+        if not ConsentService.is_consent_active(db, worker_id, "EARNINGS_PROCESSING"):
+            latest_consent = (
+                db.query(ConsentRecord)
+                .filter(
+                    ConsentRecord.user_id == worker_id,
+                    ConsentRecord.purpose.in_(["EARNINGS_DOCUMENT_EXTRACTION", "EARNINGS_PROCESSING"]),
+                )
+                .order_by(ConsentRecord.created_at.desc())
+                .first()
             )
-            .order_by(ConsentRecord.created_at.desc())
-            .first()
-        )
-        if not latest_consent:
+            if latest_consent and not latest_consent.is_granted:
+                detail = "Processing rejected: Worker has explicitly revoked consent for 'earnings_processing'."
+            else:
+                detail = "Processing rejected: Explicit prior worker consent required for 'earnings_processing'."
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Processing rejected: Explicit prior worker consent required for 'earnings_processing'.",
-            )
-        if not latest_consent.is_granted:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Processing rejected: Worker has explicitly revoked consent for 'earnings_processing'.",
+                detail=detail,
             )
 
         # 1. Validate file extension
@@ -122,18 +121,24 @@ class EarningsPipeline:
         # 6. Extract text & structured AI fields
         try:
             raw_text = extract_raw_text(contents, ext)
-            extracted_data = EarningsExtractor.parse_with_heuristics(raw_text, filename)
+            extracted_data = await EarningsExtractor.extract(raw_text, filename)
 
             # Parse start and end dates
+            date_uncertain = False
             try:
                 start_dt = datetime.strptime(extracted_data.statement_period_start[:10], "%Y-%m-%d")
             except Exception:
                 start_dt = utc_now()
+                date_uncertain = True
 
             try:
                 end_dt = datetime.strptime(extracted_data.statement_period_end[:10], "%Y-%m-%d")
             except Exception:
                 end_dt = utc_now()
+                date_uncertain = True
+
+            raw_dict = extracted_data.model_dump()
+            raw_dict["date_uncertain"] = date_uncertain
 
             entry = EarningEntry(
                 upload_id=upload.id,
@@ -154,11 +159,20 @@ class EarningsPipeline:
                 is_confirmed_by_worker=False, # Mandatory worker review
                 worker_confirmed_at=None,
                 worker_adjusted_notes=extracted_data.source_attribution_notes,
-                raw_extracted_json=extracted_data.model_dump(),
+                raw_extracted_json=raw_dict,
             )
             db.add(entry)
 
-            upload.upload_status = "PARSED"
+            # If no financial components found, flag as NEEDS_REVIEW instead of PARSED
+            if extracted_data.confidence_score <= 0.20:
+                upload.upload_status = "NEEDS_REVIEW"
+                upload.processing_error = (
+                    "No recognized financial earnings or payout line items could be detected in this document. "
+                    "Worker review or re-upload required."
+                )
+            else:
+                upload.upload_status = "PARSED"
+
             db.commit()
             db.refresh(upload)
             db.refresh(entry)

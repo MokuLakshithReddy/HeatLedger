@@ -206,6 +206,12 @@ class ExposureInterval(Base):
     shift = relationship("Shift", back_populates="exposure_intervals")
     worker = relationship("User")
 
+    @property
+    def duration_minutes(self) -> float:
+        if self.start_time and self.end_time:
+            return round((self.end_time - self.start_time).total_seconds() / 60.0, 2)
+        return 0.0
+
 # 11. Earnings Uploads
 class EarningsUpload(Base):
     __tablename__ = "earnings_uploads"

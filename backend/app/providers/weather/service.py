@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
+import math
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
+from fastapi import HTTPException, status
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.models.entities import WeatherObservation, utc_now
@@ -8,6 +10,19 @@ from backend.app.providers.weather.base import BaseWeatherProvider, WeatherObser
 from backend.app.providers.weather.imd import IMDWeatherProvider
 from backend.app.providers.weather.era5 import ERA5LandProvider
 from backend.app.providers.weather.fixtures import HyderabadDemoProvider
+
+def haversine_distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371.0 # Earth radius km
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(delta_phi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * (math.sin(delta_lambda / 2.0) ** 2)
+    )
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return round(R * c, 2)
 
 class WeatherProviderService:
     def __init__(self):
@@ -51,17 +66,26 @@ class WeatherProviderService:
         end_time: datetime,
         db: Optional[Session] = None,
     ) -> List[WeatherObservationDTO]:
-        # Check if we already have observations in DB
+        # Check if we already have observations in DB within 25km radius
         if db:
-            existing = (
+            is_prod = settings.ENVIRONMENT == "production" or not settings.DEMO_MODE
+            query = (
                 db.query(WeatherObservation)
                 .filter(
                     WeatherObservation.observed_at >= start_time,
                     WeatherObservation.observed_at <= end_time,
                 )
                 .order_by(WeatherObservation.observed_at.asc())
-                .all()
             )
+            if is_prod:
+                query = query.filter(~WeatherObservation.provider_name.ilike("%DEMO%"))
+            all_existing = query.all()
+            
+            # Filter by spatial proximity (25 km threshold)
+            existing = [
+                obs for obs in all_existing
+                if haversine_distance_km(latitude, longitude, obs.latitude, obs.longitude) <= 25.0
+            ]
             if existing and len(existing) >= 2:
                 return [
                     WeatherObservationDTO(

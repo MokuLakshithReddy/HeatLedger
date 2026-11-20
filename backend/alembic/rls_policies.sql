@@ -55,12 +55,36 @@ ALTER TABLE cases FORCE ROW LEVEL SECURITY;
 ALTER TABLE case_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE case_notes FORCE ROW LEVEL SECURITY;
 
--- 3. Users: User can view and update their own record; admin can view all
+-- 3. Users: Unauthenticated lookup for login, public registration, and strict self/admin isolation
 DROP POLICY IF EXISTS user_self_isolation ON users;
-CREATE POLICY user_self_isolation ON users
-    FOR ALL
+DROP POLICY IF EXISTS user_select ON users;
+CREATE POLICY user_select ON users
+    FOR SELECT
+    USING (
+        current_app_user_id() IS NULL
+        OR id = current_app_user_id()
+        OR current_app_user_role() = 'system_admin'
+    );
+
+DROP POLICY IF EXISTS user_register_insert ON users;
+CREATE POLICY user_register_insert ON users
+    FOR INSERT
+    WITH CHECK (
+        current_app_user_role() = 'system_admin'
+        OR (current_app_user_id() IS NULL AND role IN ('worker', 'union_member'))
+        OR id = current_app_user_id()
+    );
+
+DROP POLICY IF EXISTS user_update ON users;
+CREATE POLICY user_update ON users
+    FOR UPDATE
     USING (id = current_app_user_id() OR current_app_user_role() = 'system_admin')
     WITH CHECK (id = current_app_user_id() OR current_app_user_role() = 'system_admin');
+
+DROP POLICY IF EXISTS user_delete ON users;
+CREATE POLICY user_delete ON users
+    FOR DELETE
+    USING (id = current_app_user_id() OR current_app_user_role() = 'system_admin');
 
 -- 4. Worker Profiles: Worker owns their profile
 DROP POLICY IF EXISTS worker_profile_isolation ON worker_profiles;
@@ -178,7 +202,7 @@ CREATE POLICY org_shared_reports_access ON evidence_reports
         )
     );
 
--- 14. Report Sources: Readable by report owner or authorized org member
+-- 14. Report Sources: Readable by report owner or authorized org member; writable by report owner
 DROP POLICY IF EXISTS report_sources_access ON report_sources;
 CREATE POLICY report_sources_access ON report_sources
     FOR SELECT
@@ -199,6 +223,30 @@ CREATE POLICY report_sources_access ON report_sources
               AND o.is_approved = TRUE
               AND sg.is_revoked = FALSE
               AND sg.expires_at > NOW()
+        )
+    );
+
+DROP POLICY IF EXISTS report_sources_insert ON report_sources;
+CREATE POLICY report_sources_insert ON report_sources
+    FOR INSERT
+    WITH CHECK (
+        current_app_user_role() = 'system_admin'
+        OR EXISTS (
+            SELECT 1 FROM evidence_reports er
+            WHERE er.id = report_sources.report_id
+              AND er.worker_id = current_app_user_id()
+        )
+    );
+
+DROP POLICY IF EXISTS report_sources_delete ON report_sources;
+CREATE POLICY report_sources_delete ON report_sources
+    FOR DELETE
+    USING (
+        current_app_user_role() = 'system_admin'
+        OR EXISTS (
+            SELECT 1 FROM evidence_reports er
+            WHERE er.id = report_sources.report_id
+              AND er.worker_id = current_app_user_id()
         )
     );
 
