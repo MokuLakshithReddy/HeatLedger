@@ -6,6 +6,7 @@ import shutil
 
 from backend.app.core.database import get_db
 from backend.app.core.config import settings
+from backend.app.core.logging import logger
 from backend.app.models.entities import (
     User,
     WorkerProfile,
@@ -17,6 +18,7 @@ from backend.app.models.entities import (
     EarningsUpload,
     EarningEntry,
     EvidenceReport,
+    ReportSource,
     ShareGrant,
     AuditLog,
     utc_now,
@@ -263,7 +265,7 @@ def export_my_data(
             {
                 "action": a.action,
                 "timestamp": a.timestamp.isoformat(),
-                "entity": a.entity_name,
+                "entity": a.entity_type,
             }
             for a in audits
         ],

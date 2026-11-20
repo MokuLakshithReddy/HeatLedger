@@ -1,9 +1,21 @@
-from typing import Optional, Generator
+from typing import Optional, Generator, Any
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import hashlib
+from decimal import Decimal
+
+def sanitize_metadata(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {k: sanitize_metadata(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [sanitize_metadata(v) for v in data]
+    elif isinstance(data, Decimal):
+        return float(data)
+    elif hasattr(data, "isoformat"):
+        return data.isoformat()
+    return data
 
 from backend.app.core.database import get_db
 from backend.app.core.security import decode_access_token
@@ -105,7 +117,7 @@ def log_audit(
         action=action,
         entity_type=entity_type,
         entity_id=entity_id,
-        metadata_json=metadata_json,
+        metadata_json=sanitize_metadata(metadata_json) if metadata_json else None,
         ip_hash=ip_hash,
         timestamp=utc_now(),
     )

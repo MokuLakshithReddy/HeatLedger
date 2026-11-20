@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, String, Boolean, Integer, Float, DateTime, ForeignKey, Text, JSON, CheckConstraint, Index
+    Column, String, Boolean, Integer, Float, Numeric, DateTime, ForeignKey, Text, JSON, CheckConstraint, Index
 )
 from sqlalchemy.orm import relationship
 from backend.app.core.database import Base
@@ -238,16 +238,16 @@ class EarningEntry(Base):
     upload_id = Column(String(36), ForeignKey("earnings_uploads.id", ondelete="CASCADE"), nullable=False, index=True)
     worker_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     platform_name = Column(String(100), nullable=False) # Swiggy, Zomato, Uber, Ola, etc.
-    statement_period_start = Column(DateTime, nullable=False)
-    statement_period_end = Column(DateTime, nullable=False)
-    base_earnings = Column(Float, default=0.0, nullable=False)
-    order_payments = Column(Float, default=0.0, nullable=False)
-    incentives = Column(Float, default=0.0, nullable=False)
-    bonuses = Column(Float, default=0.0, nullable=False)
-    deductions = Column(Float, default=0.0, nullable=False)
-    penalties = Column(Float, default=0.0, nullable=False)
-    taxes = Column(Float, default=0.0, nullable=False)
-    net_amount = Column(Float, default=0.0, nullable=False)
+    statement_period_start = Column(DateTime, nullable=True)
+    statement_period_end = Column(DateTime, nullable=True)
+    base_earnings = Column(Numeric(10, 2), default=0.00, nullable=False)
+    order_payments = Column(Numeric(10, 2), default=0.00, nullable=False)
+    incentives = Column(Numeric(10, 2), default=0.00, nullable=False)
+    bonuses = Column(Numeric(10, 2), default=0.00, nullable=False)
+    deductions = Column(Numeric(10, 2), default=0.00, nullable=False)
+    penalties = Column(Numeric(10, 2), default=0.00, nullable=False)
+    taxes = Column(Numeric(10, 2), default=0.00, nullable=False)
+    net_amount = Column(Numeric(10, 2), default=0.00, nullable=False)
     payment_date = Column(DateTime, nullable=True)
     extraction_confidence = Column(Float, default=1.0, nullable=False)
     is_confirmed_by_worker = Column(Boolean, default=False, nullable=False)
@@ -286,7 +286,7 @@ class EvidenceReport(Base):
     total_shifts = Column(Integer, default=0, nullable=False)
     total_hours_worked = Column(Float, default=0.0, nullable=False)
     total_extreme_heat_hours = Column(Float, default=0.0, nullable=False)
-    net_earnings_recorded = Column(Float, default=0.0, nullable=False)
+    net_earnings_recorded = Column(Numeric(10, 2), default=0.00, nullable=False)
     integrity_sha256 = Column(String(64), nullable=False)
     pdf_storage_path = Column(String(500), nullable=True)
     limitations_disclaimer = Column(Text, nullable=False)

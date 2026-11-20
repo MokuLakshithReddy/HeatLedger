@@ -1,10 +1,13 @@
 /**
  * Continuous Consensual Location Collection Service
- * Manages foreground/active shift GPS sampling at documented intervals (60s).
+ * Manages foreground and background active shift GPS sampling at documented intervals (60s).
  * Strictly ceases collection upon shift completion or consent revocation.
  */
 import * as Location from "expo-location";
+import * as TaskManager from "expo-task-manager";
 import { mobileApiFetch } from "@/lib/api";
+
+export const BACKGROUND_LOCATION_TASK = "HEATLEDGER_BACKGROUND_LOCATION_TASK";
 
 let locationSubscription: Location.LocationSubscription | null = null;
 let currentActiveShiftId: string | null = null;
@@ -18,9 +21,40 @@ export interface LocationCoordinates {
   speedMps?: number | null;
 }
 
+// Register background location task
+try {
+  if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
+    TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+      if (error) {
+        console.warn("Background location task error:", error);
+        return;
+      }
+      if (data && (data as any).locations && (data as any).locations.length > 0) {
+        const loc = (data as any).locations[0];
+        const shiftId = currentActiveShiftId;
+        if (shiftId) {
+          const now = Date.now();
+          if (now - lastSampleTimestamp >= 45000) {
+            lastSampleTimestamp = now;
+            await LocationTrackingService.recordSample(shiftId, {
+              latitude: loc.coords.latitude,
+              longitude: loc.coords.longitude,
+              accuracyMeters: loc.coords.accuracy || 10.0,
+              altitudeMeters: loc.coords.altitude,
+              speedMps: loc.coords.speed,
+            });
+          }
+        }
+      }
+    });
+  }
+} catch (e) {
+  console.warn("Could not register background location task:", e);
+}
+
 export const LocationTrackingService = {
   isTrackingActive(): boolean {
-    return locationSubscription !== null;
+    return locationSubscription !== null || currentActiveShiftId !== null;
   },
 
   getCurrentShiftId(): string | null {
@@ -29,14 +63,14 @@ export const LocationTrackingService = {
 
   async startTrackingForShift(shiftId: string): Promise<boolean> {
     try {
-      // 1. Check permissions
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== "granted") {
+      // 1. Check foreground permissions
+      const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+      if (fgStatus !== "granted") {
         console.warn("LocationTrackingService: Foreground permission not granted.");
         return false;
       }
 
-      // 2. Stop any existing watcher
+      // 2. Stop any existing tracking
       await LocationTrackingService.stopTracking();
 
       currentActiveShiftId = shiftId;
@@ -58,7 +92,28 @@ export const LocationTrackingService = {
         console.warn("LocationTrackingService: Initial GPS fix timeout:", fixErr);
       }
 
-      // 4. Start periodic watcher (every 60 seconds or 50 meters)
+      // 4. Request background permission for continuous tracking
+      try {
+        const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+        if (bgStatus === "granted" && TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
+          await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+            accuracy: Location.Accuracy.Balanced,
+            timeInterval: 60000, // 60 seconds
+            distanceInterval: 50, // 50 meters
+            deferredUpdatesInterval: 60000,
+            showsBackgroundLocationIndicator: true,
+            foregroundService: {
+              notificationTitle: "HeatLedger Shift Active",
+              notificationBody: "Monitoring environmental heat exposure during your shift.",
+              notificationColor: "#0284c7",
+            },
+          });
+        }
+      } catch (bgErr) {
+        console.warn("Background tracking not available, continuing with foreground watch:", bgErr);
+      }
+
+      // 5. Start periodic foreground watcher
       locationSubscription = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.Balanced,
@@ -67,7 +122,7 @@ export const LocationTrackingService = {
         },
         async (loc) => {
           if (!currentActiveShiftId) {
-            LocationTrackingService.stopTracking();
+            await LocationTrackingService.stopTracking();
             return;
           }
           // Throttle to at most once per 45 seconds
@@ -105,18 +160,25 @@ export const LocationTrackingService = {
         }),
       });
     } catch (e: any) {
-      // If backend returns 403 (consent revoked or shift completed), stop tracking immediately
       if (e.message && (e.message.includes("403") || e.message.includes("revoked") || e.message.includes("not active"))) {
         console.warn("LocationTrackingService: Consent revoked or shift inactive. Halting tracking.");
-        LocationTrackingService.stopTracking();
+        await LocationTrackingService.stopTracking();
       }
     }
   },
 
-  stopTracking(): void {
+  async stopTracking(): Promise<void> {
     if (locationSubscription) {
       locationSubscription.remove();
       locationSubscription = null;
+    }
+    try {
+      const hasBg = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+      if (hasBg) {
+        await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+      }
+    } catch (e) {
+      // Background task not active
     }
     currentActiveShiftId = null;
   },

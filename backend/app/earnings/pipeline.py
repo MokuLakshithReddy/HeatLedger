@@ -123,22 +123,23 @@ class EarningsPipeline:
             raw_text = extract_raw_text(contents, ext)
             extracted_data = await EarningsExtractor.extract(raw_text, filename)
 
-            # Parse start and end dates
-            date_uncertain = False
-            try:
-                start_dt = datetime.strptime(extracted_data.statement_period_start[:10], "%Y-%m-%d")
-            except Exception:
-                start_dt = utc_now()
-                date_uncertain = True
+            # Parse start and end dates (preserves None if dates are not detected in document)
+            start_dt = None
+            if extracted_data.statement_period_start:
+                try:
+                    start_dt = datetime.strptime(extracted_data.statement_period_start[:10], "%Y-%m-%d")
+                except Exception:
+                    start_dt = None
 
-            try:
-                end_dt = datetime.strptime(extracted_data.statement_period_end[:10], "%Y-%m-%d")
-            except Exception:
-                end_dt = utc_now()
-                date_uncertain = True
+            end_dt = None
+            if extracted_data.statement_period_end:
+                try:
+                    end_dt = datetime.strptime(extracted_data.statement_period_end[:10], "%Y-%m-%d")
+                except Exception:
+                    end_dt = None
 
             raw_dict = extracted_data.model_dump()
-            raw_dict["date_uncertain"] = date_uncertain
+            raw_dict["has_verified_dates"] = (start_dt is not None and end_dt is not None)
 
             entry = EarningEntry(
                 upload_id=upload.id,
@@ -163,12 +164,18 @@ class EarningsPipeline:
             )
             db.add(entry)
 
-            # If no financial components found, flag as NEEDS_REVIEW instead of PARSED
-            if extracted_data.confidence_score <= 0.20:
+            # Flag status based on genuine extraction confidence & date verification
+            if extracted_data.confidence_score <= 0.20 or extracted_data.net_amount == 0.0:
                 upload.upload_status = "NEEDS_REVIEW"
                 upload.processing_error = (
                     "No recognized financial earnings or payout line items could be detected in this document. "
                     "Worker review or re-upload required."
+                )
+            elif start_dt is None or end_dt is None or extracted_data.confidence_score < 0.70:
+                upload.upload_status = "NEEDS_REVIEW"
+                upload.processing_error = (
+                    "Statement parsed with caveats: missing period dates or lower extraction confidence. "
+                    "Worker review and confirmation required before inclusion in evidence dossiers."
                 )
             else:
                 upload.upload_status = "PARSED"

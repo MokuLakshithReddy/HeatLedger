@@ -86,12 +86,32 @@ CREATE POLICY user_delete ON users
     FOR DELETE
     USING (id = current_app_user_id() OR current_app_user_role() = 'system_admin');
 
--- 4. Worker Profiles: Worker owns their profile
+-- 4. Worker Profiles: Worker owns their profile; allow registration profile insertion
 DROP POLICY IF EXISTS worker_profile_isolation ON worker_profiles;
-CREATE POLICY worker_profile_isolation ON worker_profiles
-    FOR ALL
+DROP POLICY IF EXISTS worker_profile_select ON worker_profiles;
+CREATE POLICY worker_profile_select ON worker_profiles
+    FOR SELECT
+    USING (user_id = current_app_user_id() OR current_app_user_role() = 'system_admin');
+
+DROP POLICY IF EXISTS worker_profile_insert ON worker_profiles;
+CREATE POLICY worker_profile_insert ON worker_profiles
+    FOR INSERT
+    WITH CHECK (
+        user_id = current_app_user_id()
+        OR current_app_user_role() = 'system_admin'
+        OR (current_app_user_id() IS NULL AND EXISTS (SELECT 1 FROM users WHERE users.id = worker_profiles.user_id))
+    );
+
+DROP POLICY IF EXISTS worker_profile_update ON worker_profiles;
+CREATE POLICY worker_profile_update ON worker_profiles
+    FOR UPDATE
     USING (user_id = current_app_user_id() OR current_app_user_role() = 'system_admin')
     WITH CHECK (user_id = current_app_user_id() OR current_app_user_role() = 'system_admin');
+
+DROP POLICY IF EXISTS worker_profile_delete ON worker_profiles;
+CREATE POLICY worker_profile_delete ON worker_profiles
+    FOR DELETE
+    USING (user_id = current_app_user_id() OR current_app_user_role() = 'system_admin');
 
 -- 5. Consent Records: Worker owns their consent declarations
 DROP POLICY IF EXISTS worker_consent_isolation ON consent_records;

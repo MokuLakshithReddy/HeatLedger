@@ -19,8 +19,8 @@ class EarningEntryResponse(BaseSchema):
     upload_id: str
     worker_id: str
     platform_name: str
-    statement_period_start: datetime
-    statement_period_end: datetime
+    statement_period_start: Optional[datetime] = None
+    statement_period_end: Optional[datetime] = None
     base_earnings: float
     order_payments: float
     incentives: float
@@ -45,8 +45,8 @@ class EarningEntryConfirmRequest(BaseModel):
 
 class ExtractionStructuredResult(BaseModel):
     platform_name: str
-    statement_period_start: str # YYYY-MM-DD
-    statement_period_end: str   # YYYY-MM-DD
+    statement_period_start: Optional[str] = None # YYYY-MM-DD or None if not detected
+    statement_period_end: Optional[str] = None   # YYYY-MM-DD or None if not detected
     base_earnings: float = 0.0
     order_payments: float = 0.0
     incentives: float = 0.0

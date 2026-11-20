@@ -104,9 +104,33 @@ class ERA5LandProvider(BaseWeatherProvider):
                     headers=headers,
                 )
                 
-                if resp.status_code in [200, 201, 202]:
+                if resp.status_code in [200, 201]:
                     data = resp.json()
                     return self.parse_era5_response(data, latitude, longitude, start_time)
+                elif resp.status_code == 202:
+                    # Async task queued in CDS processing queue; poll with backoff
+                    job_data = resp.json()
+                    request_id = job_data.get("request_id") or job_data.get("id")
+                    status_url = resp.headers.get("Location") or f"{self.api_url.rstrip('/')}/tasks/{request_id}"
+                    
+                    import asyncio
+                    for _ in range(3):
+                        await asyncio.sleep(1.5)
+                        poll_resp = await client.get(status_url, headers=headers)
+                        if poll_resp.status_code == 200:
+                            pdata = poll_resp.json()
+                            state = (pdata.get("state") or pdata.get("status") or "").lower()
+                            if state in ["completed", "successful", "complete"]:
+                                result_url = pdata.get("location") or pdata.get("download_url")
+                                if result_url:
+                                    res_resp = await client.get(result_url, headers=headers)
+                                    if res_resp.status_code == 200:
+                                        return self.parse_era5_response(res_resp.json(), latitude, longitude, start_time)
+                                return self.parse_era5_response(pdata, latitude, longitude, start_time)
+                            elif state in ["failed", "aborted"]:
+                                logger.warning(f"ERA5 CDS task failed: {pdata.get('error')}")
+                                return []
+                    return []
                 else:
                     logger.warning(f"ERA5 CDS API returned HTTP {resp.status_code}: {resp.text[:200]}")
                     return []

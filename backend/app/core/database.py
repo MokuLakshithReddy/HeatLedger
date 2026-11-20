@@ -1,16 +1,31 @@
+import json
+from decimal import Decimal
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 
+# Normalize postgres:// to postgresql:// for SQLAlchemy 1.4+ / 2.0+ compatibility
+db_url = settings.DATABASE_URL
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql://", 1)
+
+def _custom_json_serializer(obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if hasattr(obj, "isoformat"):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
 # Engine setup
 connect_args = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+if db_url.startswith("sqlite"):
     connect_args = {"check_same_thread": False}
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    db_url,
     connect_args=connect_args,
+    json_serializer=lambda obj: json.dumps(obj, default=_custom_json_serializer),
     echo=False
 )
 

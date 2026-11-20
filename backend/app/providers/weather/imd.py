@@ -143,7 +143,10 @@ class IMDWeatherProvider(BaseWeatherProvider):
         if not self.api_key:
             return []
 
-        endpoint = f"{self.base_url}/api/v1/aws_data"
+        clean_base = self.base_url.rstrip("/")
+        if clean_base.endswith("/api"):
+            clean_base = clean_base[:-4]
+        endpoint = f"{clean_base}/api/v1/aws_data"
         headers = {"X-Api-Key": self.api_key, "Accept": "application/json"}
         params = {
             "lat": str(latitude),
@@ -181,14 +184,26 @@ class IMDWeatherProvider(BaseWeatherProvider):
                             except Exception:
                                 pass
                         if not obs_dt:
-                            obs_dt = start_time
+                            # Do not fabricate or substitute requested query time
+                            continue
+
+                        st_lat_raw = r.get("LAT") or r.get("latitude") or r.get("lat")
+                        st_lon_raw = r.get("LON") or r.get("longitude") or r.get("lon")
+                        if st_lat_raw is None or st_lon_raw is None:
+                            # Reject records without verifiable station coordinates
+                            continue
+                        try:
+                            st_lat = float(st_lat_raw)
+                            st_lon = float(st_lon_raw)
+                        except (ValueError, TypeError):
+                            continue
 
                         out.append(WeatherObservationDTO(
                             provider_name=self.provider_name,
                             source_identifier=str(r.get("STATION_NAME") or r.get("station_id") or "IMD_AWS_HYDERABAD_43128"),
                             data_type="DIRECT_STATION_OBSERVATION",
-                            latitude=float(r.get("lat", latitude)),
-                            longitude=float(r.get("lon", longitude)),
+                            latitude=st_lat,
+                            longitude=st_lon,
                             spatial_resolution_km=10.0,
                             observed_at=obs_dt,
                             temperature_celsius=temp_c,
@@ -218,10 +233,16 @@ class IMDWeatherProvider(BaseWeatherProvider):
                 "disclaimer": "IMD Open Data API key not configured. Real-time observations unavailable.",
             }
 
+        clean_base = self.base_url.rstrip("/")
+        if clean_base.endswith("/api"):
+            clean_base = clean_base[:-4]
+
         headers = {"X-Api-Key": self.api_key, "Accept": "application/json"}
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
-                resp = await client.get(f"{self.base_url}/health", headers=headers)
+                resp = await client.get(f"{clean_base}/api/v1/health", headers=headers)
+                if resp.status_code == 404:
+                    resp = await client.get(f"{clean_base}/health", headers=headers)
                 is_ok = resp.status_code in [200, 204]
                 return {
                     "provider": self.provider_name,

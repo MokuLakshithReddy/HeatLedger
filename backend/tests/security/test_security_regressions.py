@@ -301,3 +301,46 @@ def test_sec_19_account_deletion_genuinely_purges_linked_records(client, worker_
     # Verify database: shift and location samples are completely gone
     assert db_session.query(Shift).filter(Shift.worker_id == worker_user.id).count() == 0
     assert db_session.query(LocationSample).filter(LocationSample.shift_id == shift_id).count() == 0
+
+# 20. Account deletion with failed file purge records partial failure
+def test_sec_20_account_deletion_with_failed_file_reports_partial_failure(client, worker_auth_headers, worker_user, db_session, monkeypatch):
+    from backend.app.models.entities import EarningsUpload
+    from backend.app.core.storage import get_storage_provider
+
+    # Seed an earnings upload with a stored filepath
+    up = EarningsUpload(
+        worker_id=worker_user.id,
+        original_filename="statement.pdf",
+        stored_filepath="uploads/private/test_missing.pdf",
+        file_type="pdf",
+        file_size_bytes=1000,
+        sha256_hash="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        upload_status="PARSED",
+    )
+    db_session.add(up)
+    db_session.commit()
+
+    # Mock storage delete_file to simulate failure (returns False)
+    storage = get_storage_provider()
+    monkeypatch.setattr(storage, "delete_file", lambda path: False)
+
+    resp = client.delete("/api/v1/profiles/me/delete", headers=worker_auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["deletion_status"] == "PARTIALLY_FAILED"
+    assert "uploads/private/test_missing.pdf" in data["failed_files"]
+
+# 21. Data export includes all portable personal data sections and audit logs
+def test_sec_21_data_export_includes_all_sections_and_audits(client, worker_auth_headers, worker_user, db_session):
+    resp = client.get("/api/v1/profiles/me/export", headers=worker_auth_headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "export_metadata" in data
+    assert "profile" in data
+    assert "consents" in data
+    assert "shifts" in data
+    assert "breaks" in data
+    assert "locations" in data
+    assert "exposures" in data
+    assert "audit_history" in data
+    assert data["profile"]["id"] == worker_user.id

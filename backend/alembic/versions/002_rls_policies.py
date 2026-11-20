@@ -36,6 +36,10 @@ def downgrade() -> None:
         DROP POLICY IF EXISTS user_update ON users;
         DROP POLICY IF EXISTS user_delete ON users;
         DROP POLICY IF EXISTS worker_profile_isolation ON worker_profiles;
+        DROP POLICY IF EXISTS worker_profile_select ON worker_profiles;
+        DROP POLICY IF EXISTS worker_profile_insert ON worker_profiles;
+        DROP POLICY IF EXISTS worker_profile_update ON worker_profiles;
+        DROP POLICY IF EXISTS worker_profile_delete ON worker_profiles;
         DROP POLICY IF EXISTS worker_consent_isolation ON consent_records;
         DROP POLICY IF EXISTS worker_shift_isolation ON shifts;
         DROP POLICY IF EXISTS worker_location_isolation ON location_samples;

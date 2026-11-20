@@ -43,7 +43,8 @@ class EarningsExtractor:
 
         # 2. Extract dates (YYYY-MM-DD or DD/MM/YYYY)
         dates = re.findall(r"\b(\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b", raw_text)
-        start_date = dates[0] if len(dates) > 0 else today
+        has_dates = len(dates) > 0
+        start_date = dates[0] if has_dates else None
         end_date = dates[1] if len(dates) > 1 else start_date
 
         # 3. Line-by-line single classification to prevent double counting (EARN-04)
@@ -154,12 +155,24 @@ class EarningsExtractor:
         )
 
         if not has_any_earnings:
-            confidence = 0.10
+            confidence = 0.0
             discrepancy_note += " Warning: No recognized monetary amounts found in statement."
         else:
-            confidence = 0.90 if platform != "Gig Platform" and final_net > Decimal("0.0") else 0.65
+            # Base confidence starts from platform recognition
+            score = 0.90 if platform != "Gig Platform" else 0.60
+            
+            # Penalize missing dates
+            if not has_dates:
+                score -= 0.25
+                discrepancy_note += " Warning: Statement period dates could not be identified."
+            
+            # Penalize component discrepancies with stated net
+            if explicit_net > Decimal("0.0") and abs(explicit_net - calculated_net) > Decimal("1.0"):
+                score -= 0.20
+            elif explicit_net == Decimal("0.0"):
+                score -= 0.10
 
-        date_inferred = len(dates) == 0
+            confidence = max(0.10, min(0.95, round(score, 2)))
 
         return ExtractionStructuredResult(
             platform_name=platform,
@@ -178,7 +191,7 @@ class EarningsExtractor:
             source_attribution_notes=(
                 f"Extracted deterministically from document text ({filename})."
                 f"{discrepancy_note}"
-                f"{' Note: Dates were inferred.' if date_inferred else ''} Worker verification required."
+                f"{' Note: Dates were not detected in document.' if not has_dates else ''} Worker verification required."
             ),
         )
 
