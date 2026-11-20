@@ -63,13 +63,25 @@ class EarningsPipeline:
                 detail=f"Unsupported file type '.{ext}'. Allowed types: {sorted(list(ALLOWED_EXTENSIONS))}",
             )
 
-        # 2. Read contents and validate size
-        contents = await file.read()
-        if len(contents) > settings.MAX_UPLOAD_SIZE_BYTES:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"File exceeds maximum allowed size of {settings.MAX_UPLOAD_SIZE_BYTES // (1024*1024)}MB",
-            )
+        # 2. Read contents in bounded chunks to prevent memory exhaustion
+        chunk_size = 64 * 1024 # 64KB
+        chunks = []
+        total_read = 0
+        max_allowed = settings.MAX_UPLOAD_SIZE_BYTES
+
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                break
+            total_read += len(chunk)
+            if total_read > max_allowed:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"File exceeds maximum allowed size of {max_allowed // (1024 * 1024)}MB",
+                )
+            chunks.append(chunk)
+
+        contents = b"".join(chunks)
         if len(contents) == 0:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

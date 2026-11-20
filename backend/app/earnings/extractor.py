@@ -28,24 +28,9 @@ class EarningsExtractor:
         """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Check if parser returned an error or notice
+        # Check if parser returned an error or unreadable notice
         if raw_text.startswith("[") and ("ERROR" in raw_text or "UNAVAILABLE" in raw_text or "NOTICE" in raw_text):
-            return ExtractionStructuredResult(
-                platform_name="Unidentified Platform",
-                statement_period_start=today,
-                statement_period_end=today,
-                base_earnings=0.0,
-                order_payments=0.0,
-                incentives=0.0,
-                bonuses=0.0,
-                deductions=0.0,
-                penalties=0.0,
-                taxes=0.0,
-                net_amount=0.0,
-                payment_date=today,
-                confidence_score=0.0,
-                source_attribution_notes=f"Extraction failed: {raw_text}",
-            )
+            raise ValueError(f"Document extraction failed due to unreadable content or OCR unavailability: {raw_text}")
 
         lower = raw_text.lower()
         

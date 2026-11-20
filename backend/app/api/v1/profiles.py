@@ -292,6 +292,7 @@ def request_account_deletion(
     from backend.app.core.storage import get_storage_provider
     storage = get_storage_provider()
     files_purged = 0
+    failed_files = []
 
     uploads = db.query(EarningsUpload).filter(EarningsUpload.worker_id == current_user.id).all()
     upload_count = len(uploads)
@@ -300,8 +301,9 @@ def request_account_deletion(
             try:
                 storage.delete_file(up.stored_filepath)
                 files_purged += 1
-            except Exception:
-                pass
+            except Exception as e:
+                failed_files.append(up.stored_filepath)
+                logger.warning(f"Could not purge upload file {up.stored_filepath}: {e}")
 
     reports = db.query(EvidenceReport).filter(EvidenceReport.worker_id == current_user.id).all()
     report_count = len(reports)
@@ -311,16 +313,17 @@ def request_account_deletion(
             try:
                 storage.delete_file(rep.pdf_storage_path)
                 files_purged += 1
-            except Exception:
-                pass
+            except Exception as e:
+                failed_files.append(rep.pdf_storage_path)
+                logger.warning(f"Could not purge report file {rep.pdf_storage_path}: {e}")
 
     # Clean local storage directory if present
     user_storage_dir = os.path.join(settings.LOCAL_STORAGE_DIR, current_user.id)
     if os.path.exists(user_storage_dir):
         try:
             shutil.rmtree(user_storage_dir)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Could not remove local storage dir {user_storage_dir}: {e}")
 
     # 4. Genuine Database Purging & Cascade
     # Delete report sources
@@ -352,22 +355,30 @@ def request_account_deletion(
     # Delete worker profile
     db.query(WorkerProfile).filter(WorkerProfile.user_id == current_user.id).delete(synchronize_session=False)
 
+    # Deactivate and purge organisation memberships
+    from backend.app.models.entities import OrganisationMember
+    db.query(OrganisationMember).filter(OrganisationMember.user_id == current_user.id).delete(synchronize_session=False)
+
     # Revoke all consents
     db.query(ConsentRecord).filter(ConsentRecord.user_id == current_user.id).delete(synchronize_session=False)
 
     # Anonymize user record
+    import secrets
     log_audit(db, current_user.id, "ACCOUNT_DATA_PURGED", "User", current_user.id, None, request)
     current_user.is_active = False
     current_user.full_name = "Deleted Worker"
     current_user.email = f"deleted_{current_user.id[:8]}@heatledger.local"
     current_user.phone = None
-    current_user.hashed_password = "DELETED"
+    current_user.hashed_password = f"!ANONYMIZED_AND_DELETED_${secrets.token_hex(16)}"
     current_user.updated_at = now
     db.commit()
 
+    deletion_status = "PARTIALLY_FAILED" if failed_files else "COMPLETED"
+
     return {
         "success": True,
-        "deletion_status": "COMPLETED",
+        "deletion_status": deletion_status,
+        "failed_files": failed_files,
         "purged_records": {
             "location_samples": loc_count,
             "shifts": shift_count,

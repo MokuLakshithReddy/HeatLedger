@@ -12,6 +12,7 @@ import {
 import { router } from "expo-router";
 import { mobileApiFetch } from "@/lib/api";
 import { SessionStore } from "@/lib/store";
+import { isConsentActive } from "@/lib/consent";
 
 export default function SettingsScreen() {
   const [locationConsent, setLocationConsent] = useState(true);
@@ -24,11 +25,9 @@ export default function SettingsScreen() {
       try {
         const consents = await mobileApiFetch<any[]>("/profiles/me/consents");
         if (Array.isArray(consents)) {
-          for (const c of consents) {
-            if (c.purpose === "LOCATION_TRACKING_DURING_SHIFT") setLocationConsent(c.is_granted);
-            if (c.purpose === "EARNINGS_PROCESSING") setEarningsConsent(c.is_granted);
-            if (c.purpose === "ANONYMIZED_RESEARCH") setResearchConsent(c.is_granted);
-          }
+          setLocationConsent(isConsentActive(consents, "LOCATION_TRACKING_DURING_SHIFT"));
+          setEarningsConsent(isConsentActive(consents, "EARNINGS_DOCUMENT_EXTRACTION"));
+          setResearchConsent(isConsentActive(consents, "ANONYMIZED_CLIMATE_RESEARCH"));
         }
       } catch (e) {
         console.warn("Could not load user consents", e);

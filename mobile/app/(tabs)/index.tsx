@@ -14,6 +14,7 @@ import { Language, translations } from "@/lib/i18n";
 import { SessionStore } from "@/lib/store";
 import { mobileApiFetch } from "@/lib/api";
 import * as Location from "expo-location";
+import { LocationTrackingService } from "@/lib/location";
 
 export default function WorkerDashboard() {
   const [lang, setLang] = useState<Language>("te"); // Default Telugu for Hyderabad workers
@@ -48,13 +49,29 @@ export default function WorkerDashboard() {
         setActiveShift(data.active_shift);
         setTodayWorkMins(data.today_working_minutes || 0);
         setTodayBreakMins(data.today_break_minutes || 0);
+
+        if (data.active_shift && data.active_shift.location_tracking_enabled && !LocationTrackingService.isTrackingActive()) {
+          LocationTrackingService.startTrackingForShift(data.active_shift.id);
+        }
       }
     } catch (err: any) {
       console.warn("Failed to load active shift", err);
     }
 
     try {
-      const climate = await mobileApiFetch<any>("/climate/current?latitude=17.3850&longitude=78.4867");
+      let lat = 17.3850;
+      let lon = 78.4867;
+      try {
+        const currentLoc = await Location.getLastKnownPositionAsync();
+        if (currentLoc) {
+          lat = currentLoc.coords.latitude;
+          lon = currentLoc.coords.longitude;
+        }
+      } catch (locErr) {
+        // Fall back to regional Hyderabad coordinates
+      }
+
+      const climate = await mobileApiFetch<any>(`/climate/current?latitude=${lat.toFixed(4)}&longitude=${lon.toFixed(4)}`);
       if (climate) {
         setWeatherObs({
           temp: climate.temperature_c,
@@ -89,25 +106,13 @@ export default function WorkerDashboard() {
       setActiveShift(newShift);
 
       if (trackingAllowed) {
-        try {
-          const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-          await mobileApiFetch(`/shifts/${newShift.id}/location-samples`, {
-            method: "POST",
-            body: JSON.stringify({
-              latitude: loc.coords.latitude,
-              longitude: loc.coords.longitude,
-              accuracy_meters: loc.coords.accuracy || 10.0,
-            }),
-          });
-        } catch (locErr) {
-          console.warn("Initial location sample fix error:", locErr);
-        }
+        await LocationTrackingService.startTrackingForShift(newShift.id);
       }
 
       Alert.alert(
         "Shift Started",
         trackingAllowed
-          ? "Your work and consensual GPS exposure are being recorded."
+          ? "Continuous consensual GPS tracking active (sampling every 60s during work)."
           : "Shift active without location tracking (permission off)."
       );
       loadDashboard();
@@ -122,6 +127,7 @@ export default function WorkerDashboard() {
     if (!activeShift) return;
     setLoading(true);
     try {
+      LocationTrackingService.stopTracking();
       await mobileApiFetch<any>(`/shifts/${activeShift.id}/end`, { method: "POST" });
       setActiveShift(null);
       Alert.alert("Shift Concluded", "Your working hours have been saved to your timeline.");

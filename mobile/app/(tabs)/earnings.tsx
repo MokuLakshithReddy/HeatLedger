@@ -12,6 +12,7 @@ import {
 } from "react-native";
 import * as DocumentPicker from "expo-document-picker";
 import { mobileApiFetch } from "@/lib/api";
+import { isConsentActive } from "@/lib/consent";
 
 interface EarningEntryItem {
   id: string;
@@ -37,10 +38,8 @@ export default function EarningsScreen() {
     setLoading(true);
     try {
       const consents = await mobileApiFetch<any[]>("/profiles/me/consents");
-      const activeConsent = consents?.some(
-        (c) => (c.purpose === "EARNINGS_PROCESSING" || c.purpose === "EARNINGS_DOCUMENT_EXTRACTION") && c.is_granted
-      );
-      setHasConsent(Boolean(activeConsent));
+      const activeConsent = isConsentActive(consents, "EARNINGS_DOCUMENT_EXTRACTION");
+      setHasConsent(activeConsent);
 
       const data = await mobileApiFetch<EarningEntryItem[]>("/earnings/entries");
       if (Array.isArray(data)) {

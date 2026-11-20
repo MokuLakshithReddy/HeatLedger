@@ -2,10 +2,12 @@ from typing import Optional, Generator
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 import hashlib
 
 from backend.app.core.database import get_db
 from backend.app.core.security import decode_access_token
+from backend.app.core.logging import logger
 from backend.app.models.entities import User, OrganisationMember, AuditLog, utc_now
 
 security = HTTPBearer(auto_error=False)
@@ -43,12 +45,13 @@ def get_current_user(
         )
 
     # Propagate session identity to PostgreSQL for Row Level Security (RLS)
+    db.info["current_user_id"] = str(user.id)
+    db.info["current_user_role"] = str(user.role)
     try:
         bind = db.get_bind()
         if bind and bind.dialect.name == "postgresql":
-            from sqlalchemy import text
-            db.execute(text("SET LOCAL app.current_user_id = :uid"), {"uid": str(user.id)})
-            db.execute(text("SET LOCAL app.current_user_role = :role"), {"role": str(user.role)})
+            db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
+            db.execute(text("SELECT set_config('app.current_user_role', :role, true)"), {"role": str(user.role)})
     except Exception as e:
         logger.warning(f"Could not set PostgreSQL RLS session variables: {e}")
 

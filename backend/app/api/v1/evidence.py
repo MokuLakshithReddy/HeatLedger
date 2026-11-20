@@ -14,6 +14,7 @@ from backend.app.api.deps import get_current_user, get_current_worker, log_audit
 
 router = APIRouter(prefix="/evidence", tags=["Evidence & Reports"])
 
+@router.get("/timeline", response_model=EvidenceTimelineResponse)
 @router.get("/timelines", response_model=EvidenceTimelineResponse)
 def get_evidence_timeline(
     start: Optional[datetime] = None,
@@ -147,6 +148,8 @@ def verify_report_integrity(
         "report_id": report.id,
         "report_number": report.report_number,
         "is_intact": is_valid,
+        "verified": is_valid,
+        "sha256": calculated_sha256,
         "stored_sha256": report.integrity_sha256,
         "byte_calculated_sha256": calculated_sha256,
         "verified_at": datetime.now(timezone.utc).isoformat(),

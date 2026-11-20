@@ -104,6 +104,7 @@ app.include_router(climate_router, prefix="/api/v1")
 app.include_router(earnings_router, prefix="/api/v1")
 app.include_router(evidence_router, prefix="/api/v1")
 app.include_router(shares_router, prefix="/api/v1")
+app.include_router(shares_router, prefix="/api/v1/evidence")
 app.include_router(organisations_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 

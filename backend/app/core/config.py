@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = Field(default="development") # development | staging | production
     DEBUG: bool = Field(default=True)
     PORT: int = Field(default=8000)
-    HOST: str = Field(default="0.0.0.0")
+    HOST: str = Field(default="127.0.0.1")
     
     # Security
     APP_SECRET_KEY: str = Field(default="dev-insecure-secret-key-change-in-production-min-32-chars")

@@ -31,6 +31,7 @@ services:
       APP_SECRET_KEY: dev-docker-secret-key-32-chars-long-minimum-here
       ENVIRONMENT: development
       DEMO_MODE: "true"
+      HOST: "0.0.0.0"
       STORAGE_BACKEND: local
       LOCAL_STORAGE_DIR: /app/uploads/private
       CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000

@@ -205,30 +205,40 @@ class OrgService:
             if reports else 0.0
         )
 
-        # Derive common high-heat time bands from authorized cohort shift intervals
+        # Derive common high-heat time bands strictly from authorized report shifts/intervals
         time_bands = []
-        if reports:
-            worker_ids = list(set(r.worker_id for r in reports))
-            from backend.app.models.entities import ExposureInterval, Shift
+        if shared_report_ids:
+            from backend.app.models.entities import ReportSource, ExposureInterval
             from collections import Counter
-            intervals = (
-                db.query(ExposureInterval)
-                .join(Shift, Shift.id == ExposureInterval.shift_id)
+
+            authorized_shift_sources = (
+                db.query(ReportSource.source_id)
                 .filter(
-                    Shift.worker_id.in_(worker_ids),
-                    ExposureInterval.risk_category.in_(["DANGER", "EXTREME_DANGER"]),
+                    ReportSource.report_id.in_(shared_report_ids),
+                    ReportSource.source_type == "SHIFT",
                 )
                 .all()
             )
-            hour_counts = Counter()
-            for inv in intervals:
-                # Convert UTC to IST (+5:30)
-                ist_hour = (inv.start_time.hour + 5 + (1 if inv.start_time.minute >= 30 else 0)) % 24
-                bucket_start = (ist_hour // 2) * 2
-                hour_counts[bucket_start] += 1
+            authorized_shift_ids = [s[0] for s in authorized_shift_sources]
 
-            for bucket, count in hour_counts.most_common(3):
-                time_bands.append(f"{bucket:02d}:00 - {bucket+2:02d}:00 IST ({count} severe heat intervals)")
+            if authorized_shift_ids:
+                intervals = (
+                    db.query(ExposureInterval)
+                    .filter(
+                        ExposureInterval.shift_id.in_(authorized_shift_ids),
+                        ExposureInterval.risk_category.in_(["DANGER", "EXTREME_DANGER"]),
+                    )
+                    .all()
+                )
+                hour_counts = Counter()
+                for inv in intervals:
+                    # Convert UTC to IST (+5:30)
+                    ist_hour = (inv.start_time.hour + 5 + (1 if inv.start_time.minute >= 30 else 0)) % 24
+                    bucket_start = (ist_hour // 2) * 2
+                    hour_counts[bucket_start] += 1
+
+                for bucket, count in hour_counts.most_common(3):
+                    time_bands.append(f"{bucket:02d}:00 - {bucket+2:02d}:00 IST ({count} severe heat intervals)")
 
         if not time_bands:
             time_bands = ["No severe heat intervals recorded in authorized cohort shifts"]

@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  docker-compose-build:
+  docker-compose-build-and-run:
     runs-on: ubuntu-latest
 
     steps:
@@ -22,3 +22,21 @@ jobs:
           NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
         run: |
           docker compose build --progress=plain
+
+      - name: Start Stack and Verify Runtime Health
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+        run: |
+          docker compose up -d
+          echo "Waiting for services to become healthy..."
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/api/v1/health > /dev/null; then
+              echo "Backend health check passed!"
+              break
+            fi
+            sleep 2
+          done
+          curl -sf http://localhost:8000/api/v1/health | grep '"status":"UP"'
+          curl -sf http://localhost:3000 > /dev/null
+          echo "Web and Backend container services validated successfully!"
+          docker compose down

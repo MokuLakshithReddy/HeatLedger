@@ -29,7 +29,15 @@ class WeatherProviderService:
             except Exception as e:
                 logger.warning(f"IMD fetch failed, proceeding to fallback: {e}")
 
-        # 2. Return clearly labeled Hyderabad demonstration fixture
+        # 2. In production or when DEMO_MODE is disabled, do not substitute synthetic observations
+        if settings.ENVIRONMENT == "production" or not settings.DEMO_MODE:
+            logger.warning("Live meteorological observations unavailable from official provider in production; refusing synthetic demo fallback.")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Official meteorological observations currently unavailable for this coordinate. Synthetic data fallback is disabled in production.",
+            )
+
+        # 3. Development / Demo environment: return clearly labeled Hyderabad demonstration fixture
         demo_obs = await self.demo_provider.get_current_observation(latitude, longitude)
         if db:
             self._persist_observation(db, demo_obs)
@@ -77,7 +85,24 @@ class WeatherProviderService:
                     for e in existing
                 ]
 
-        # Otherwise fetch from provider (IMD or demo)
+        # Otherwise fetch from provider (ERA5 historical reanalysis or demo in non-production)
+        if settings.CDS_API_KEY:
+            try:
+                era5_results = await self.era5_provider.get_observations_for_interval(
+                    latitude, longitude, start_time, end_time
+                )
+                if era5_results:
+                    if db:
+                        for r in era5_results:
+                            self._persist_observation(db, r)
+                    return era5_results
+            except Exception as e:
+                logger.warning(f"ERA5 retrieval failed: {e}")
+
+        if settings.ENVIRONMENT == "production" or not settings.DEMO_MODE:
+            logger.warning("Historical meteorological observations unavailable in production; DEMO data rejected.")
+            return []
+
         results = await self.demo_provider.get_observations_for_interval(
             latitude, longitude, start_time, end_time
         )

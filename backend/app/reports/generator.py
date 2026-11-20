@@ -56,6 +56,21 @@ class ReportGeneratorService:
             .all()
             if shift_ids else []
         )
+
+        # In production, reject reports generated with synthetic demo observations
+        if settings.ENVIRONMENT == "production":
+            from backend.app.models.entities import WeatherObservation
+            source_obs_ids = [e.source_observation_id for e in exposures if e.source_observation_id]
+            if source_obs_ids:
+                demo_obs = db.query(WeatherObservation).filter(
+                    WeatherObservation.id.in_(source_obs_ids),
+                    WeatherObservation.provider_name.ilike("%DEMO%")
+                ).first()
+                if demo_obs:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Production evidence report generation rejected: Synthetic demonstration climate data cannot be certified as legal evidence."
+                    )
         
         # EVID-03: Real duration of extreme heat intervals based on duration_minutes
         extreme_heat_intervals = [

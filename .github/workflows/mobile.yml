@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  typecheck:
+  mobile-checks:
     runs-on: ubuntu-latest
 
     steps:
@@ -24,6 +24,12 @@ jobs:
       - name: Install dependencies
         working-directory: ./mobile
         run: npm ci
+
+      - name: Expo SDK & Native Dependencies Verification
+        working-directory: ./mobile
+        run: |
+          npx expo install --check
+          npx expo-doctor
 
       - name: TypeScript Typecheck
         working-directory: ./mobile

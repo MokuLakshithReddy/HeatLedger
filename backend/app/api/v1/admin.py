@@ -1,9 +1,11 @@
+import os
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 
 from backend.app.core.database import get_db
 from backend.app.core.config import settings
+from backend.app.core.logging import logger
 from backend.app.models.entities import AuditLog, ProcessingJob, User, Organisation, utc_now
 from backend.app.providers.weather.service import weather_service
 from backend.app.api.deps import get_current_admin, log_audit
@@ -17,39 +19,66 @@ async def get_system_health(
     db: Session = Depends(get_db),
     current_admin = Depends(get_current_admin),
 ):
-    # Check DB
+    # 1. Check PostgreSQL Database
+    db_health = "HEALTHY"
+    user_count = 0
+    org_count = 0
     try:
         user_count = db.query(User).count()
-        db_status = "CONNECTED"
+        org_count = db.query(Organisation).count()
     except Exception as e:
-        db_status = f"ERROR: {str(e)}"
-        user_count = 0
+        logger.error(f"Health check database query failure: {str(e)}")
+        db_health = "UNAVAILABLE"
 
+    # 2. Check Storage Provider
+    storage_health = "HEALTHY"
+    try:
+        from backend.app.core.storage import get_storage_provider
+        storage = get_storage_provider()
+        if settings.STORAGE_BACKEND == "local":
+            if not os.path.exists(settings.LOCAL_STORAGE_DIR):
+                os.makedirs(settings.LOCAL_STORAGE_DIR, exist_ok=True)
+    except Exception as e:
+        logger.error(f"Health check storage verification failure: {str(e)}")
+        storage_health = "DEGRADED"
+
+    # 3. Check Weather Providers
     providers_status = await weather_service.get_all_providers_status()
+    imd_operational = any(p.get("provider") == "IMD" and p.get("status") == "OPERATIONAL" for p in providers_status)
+    era5_configured = bool(settings.CDS_API_KEY)
 
-    # Determine real overall health: if DB or providers failing, indicate degraded
-    overall_status = "HEALTHY"
-    if "ERROR" in db_status:
-        overall_status = "UNHEALTHY"
+    # 4. Determine overall system status: HEALTHY, DEGRADED, UNAVAILABLE
+    if db_health == "UNAVAILABLE":
+        overall_status = "UNAVAILABLE"
+    elif storage_health != "HEALTHY" or (settings.ENVIRONMENT == "production" and not imd_operational and not era5_configured):
+        overall_status = "DEGRADED"
+    else:
+        overall_status = "HEALTHY"
 
     return {
         "system_status": overall_status,
         "environment": settings.ENVIRONMENT,
         "demo_mode": settings.DEMO_MODE,
-        "database": {
-            "status": db_status,
-            "total_users": user_count,
-            "total_organisations": db.query(Organisation).count(),
+        "components": {
+            "database": {
+                "status": db_health,
+                "total_users": user_count,
+                "total_organisations": org_count,
+            },
+            "storage": {
+                "status": storage_health,
+                "backend": settings.STORAGE_BACKEND,
+            },
+            "weather_providers": {
+                "imd": "OPERATIONAL" if imd_operational else ("UNCONFIGURED" if not settings.IMD_API_KEY else "DEGRADED"),
+                "era5_land": "CONFIGURED" if era5_configured else "UNCONFIGURED",
+                "details": providers_status,
+            },
+            "ai_engine": {
+                "status": "CONFIGURED" if settings.GEMINI_API_KEY else "LOCAL_HEURISTICS",
+                "model": settings.LLM_MODEL_NAME,
+            },
         },
-        "storage": {
-            "backend": settings.STORAGE_BACKEND,
-            "local_dir": settings.LOCAL_STORAGE_DIR,
-        },
-        "ai_provider": {
-            "configured_model": settings.LLM_MODEL_NAME,
-            "has_gemini_key": bool(settings.GEMINI_API_KEY),
-        },
-        "weather_providers": providers_status,
     }
 
 @router.get("/organisations", response_model=List[OrganisationResponse])

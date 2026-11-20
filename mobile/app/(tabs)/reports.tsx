@@ -28,9 +28,9 @@ export default function ReportsScreen() {
     try {
       const [reps, shr, orgs, tl] = await Promise.allSettled([
         mobileApiFetch<any[]>("/evidence/reports"),
-        mobileApiFetch<any[]>("/evidence/shares"),
+        mobileApiFetch<any[]>("/shares"),
         mobileApiFetch<any[]>("/organisations"),
-        mobileApiFetch<any>("/evidence/timeline"),
+        mobileApiFetch<any>("/evidence/timelines"),
       ]);
 
       if (reps.status === "fulfilled" && Array.isArray(reps.value)) {
@@ -79,15 +79,16 @@ export default function ReportsScreen() {
   };
 
   const handleToggleShare = async (reportId: string) => {
-    // Check if currently shared
+    // Check if currently shared with an active, unrevoked grant
+    const now = new Date();
     const activeShare = shares.find(
-      (s) => s.report_id === reportId && s.is_active && !s.revoked_at
+      (s) => s.report_id === reportId && !s.is_revoked && new Date(s.expires_at) > now
     );
 
     if (activeShare) {
-      // Revoke share
+      // Revoke share immediately
       try {
-        await mobileApiFetch(`/evidence/shares/${activeShare.id}/revoke`, {
+        await mobileApiFetch(`/shares/${activeShare.id}/revoke`, {
           method: "POST",
         });
         Alert.alert("Access Revoked", "Organisation access revoked immediately.");
@@ -104,18 +105,18 @@ export default function ReportsScreen() {
       }
 
       try {
-        await mobileApiFetch("/evidence/shares", {
+        await mobileApiFetch("/shares", {
           method: "POST",
           body: JSON.stringify({
             report_id: reportId,
-            recipient_org_id: targetOrg.id,
-            purpose: "CASEWORK_SUPPORT",
-            expires_in_days: 30,
+            organisation_id: targetOrg.id,
+            purpose: "Casework and welfare grant support",
+            duration_days: 30,
           }),
         });
         Alert.alert(
           "Report Shared",
-          `Access granted to ${targetOrg.legal_name || "Union"} for casework support (30 days).`
+          `Access granted to ${targetOrg.legal_name || targetOrg.name || "Union"} for casework support (30 days).`
         );
         loadData();
       } catch (e: any) {
@@ -127,8 +128,11 @@ export default function ReportsScreen() {
   const handleVerifyReport = async (reportId: string) => {
     try {
       const result = await mobileApiFetch<any>(`/evidence/reports/${reportId}/verify`);
-      if (result.verified) {
-        Alert.alert("Integrity Verified ✅", `Digest matches stored SHA-256 byte-level hash:\n${result.sha256}`);
+      if (result.is_intact || result.verified) {
+        Alert.alert(
+          "Integrity Verified ✅",
+          `Cryptographic SHA-256 byte-level match:\n${(result.sha256 || result.stored_sha256 || "").slice(0, 32)}...`
+        );
       } else {
         Alert.alert("Verification Alert ⚠️", "Cryptographic fingerprint mismatch detected!");
       }
