@@ -67,7 +67,19 @@ class ERA5LandProvider(BaseWeatherProvider):
             logger.info("Copernicus CDS API key not configured; skipping ERA5-Land historical fetch.")
             return []
 
-        # CDS API retrieval payload
+        # Collect unique years, months, days across the full date interval
+        curr = start_time.date()
+        end_d = end_time.date()
+        years = set()
+        months = set()
+        days = set()
+        while curr <= end_d:
+            years.add(str(curr.year))
+            months.add(f"{curr.month:02d}")
+            days.add(f"{curr.day:02d}")
+            curr += timedelta(days=1)
+
+        # CDS API retrieval payload for ERA5-Land hourly gridded reanalysis
         request_payload = {
             "dataset": "reanalysis-era5-land",
             "variable": [
@@ -76,15 +88,15 @@ class ERA5LandProvider(BaseWeatherProvider):
                 "10m_u_component_of_wind",
                 "10m_v_component_of_wind",
             ],
-            "year": [str(start_time.year)],
-            "month": [f"{start_time.month:02d}"],
-            "day": [f"{start_time.day:02d}"],
-            "time": [f"{h:02d}:00" for h in range(start_time.hour, min(24, end_time.hour + 1))],
+            "year": sorted(list(years)),
+            "month": sorted(list(months)),
+            "day": sorted(list(days)),
+            "time": [f"{h:02d}:00" for h in range(24)],
             "area": [
-                latitude + 0.1,  # North
-                longitude - 0.1, # West
-                latitude - 0.1,  # South
-                longitude + 0.1, # East
+                round(latitude + 0.1, 2),  # North
+                round(longitude - 0.1, 2), # West
+                round(latitude - 0.1, 2),  # South
+                round(longitude + 0.1, 2), # East
             ],
             "format": "json",
         }

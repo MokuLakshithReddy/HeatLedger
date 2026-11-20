@@ -3,11 +3,14 @@
  * Manages foreground and background active shift GPS sampling at documented intervals (60s).
  * Strictly ceases collection upon shift completion or consent revocation.
  */
+import { Platform } from "react-native";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
+import * as SecureStore from "expo-secure-store";
 import { mobileApiFetch } from "@/lib/api";
 
 export const BACKGROUND_LOCATION_TASK = "HEATLEDGER_BACKGROUND_LOCATION_TASK";
+const ACTIVE_SHIFT_STORE_KEY = "heatledger_active_shift_id";
 
 let locationSubscription: Location.LocationSubscription | null = null;
 let currentActiveShiftId: string | null = null;
@@ -21,6 +24,41 @@ export interface LocationCoordinates {
   speedMps?: number | null;
 }
 
+async function persistActiveShiftId(shiftId: string | null): Promise<void> {
+  currentActiveShiftId = shiftId;
+  try {
+    if (shiftId) {
+      if (Platform.OS === "web") {
+        localStorage.setItem(ACTIVE_SHIFT_STORE_KEY, shiftId);
+      } else {
+        await SecureStore.setItemAsync(ACTIVE_SHIFT_STORE_KEY, shiftId);
+      }
+    } else {
+      if (Platform.OS === "web") {
+        localStorage.removeItem(ACTIVE_SHIFT_STORE_KEY);
+      } else {
+        await SecureStore.deleteItemAsync(ACTIVE_SHIFT_STORE_KEY);
+      }
+    }
+  } catch (e) {
+    console.warn("Could not persist active shift ID:", e);
+  }
+}
+
+async function getStoredActiveShiftId(): Promise<string | null> {
+  if (currentActiveShiftId) return currentActiveShiftId;
+  try {
+    if (Platform.OS === "web") {
+      currentActiveShiftId = localStorage.getItem(ACTIVE_SHIFT_STORE_KEY);
+    } else {
+      currentActiveShiftId = await SecureStore.getItemAsync(ACTIVE_SHIFT_STORE_KEY);
+    }
+  } catch (e) {
+    console.warn("Could not load stored active shift ID:", e);
+  }
+  return currentActiveShiftId;
+}
+
 // Register background location task
 try {
   if (!TaskManager.isTaskDefined(BACKGROUND_LOCATION_TASK)) {
@@ -31,7 +69,7 @@ try {
       }
       if (data && (data as any).locations && (data as any).locations.length > 0) {
         const loc = (data as any).locations[0];
-        const shiftId = currentActiveShiftId;
+        const shiftId = currentActiveShiftId || (await getStoredActiveShiftId());
         if (shiftId) {
           const now = Date.now();
           if (now - lastSampleTimestamp >= 45000) {
@@ -73,7 +111,7 @@ export const LocationTrackingService = {
       // 2. Stop any existing tracking
       await LocationTrackingService.stopTracking();
 
-      currentActiveShiftId = shiftId;
+      await persistActiveShiftId(shiftId);
       lastSampleTimestamp = Date.now();
 
       // 3. Take initial position sample
@@ -180,6 +218,6 @@ export const LocationTrackingService = {
     } catch (e) {
       // Background task not active
     }
-    currentActiveShiftId = null;
+    await persistActiveShiftId(null);
   },
 };

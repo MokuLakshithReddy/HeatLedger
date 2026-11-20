@@ -173,7 +173,7 @@ class TestPostgreSQLRowLevelSecurity:
         assert "row-level security" in str(exc_info.value).lower() or "policy" in str(exc_info.value).lower()
 
     def test_unauthenticated_login_lookup_allowed(self, pg_session):
-        """Unauthenticated requests (session identity NULL) can query user credentials for auth."""
+        """Unauthenticated requests cannot dump users table directly, but can securely authenticate via authenticate_user_lookup."""
         worker_id = "worker-auth-rls-test"
         pg_session.execute(text("SELECT set_config('app.current_user_id', 'admin', true)"))
         pg_session.execute(text("SELECT set_config('app.current_user_role', 'system_admin', true)"))
@@ -188,9 +188,32 @@ class TestPostgreSQLRowLevelSecurity:
         pg_session.execute(text("SELECT set_config('app.current_user_id', '', true)"))
         pg_session.execute(text("SELECT set_config('app.current_user_role', '', true)"))
 
-        user_row = pg_session.execute(text("SELECT id, email, hashed_password FROM users WHERE email = 'login_test@worker.org'")).fetchone()
-        assert user_row is not None
-        assert user_row[0] == worker_id
+        # Table-level query MUST fail closed (0 rows) to prevent user enumeration / password dumping
+        all_users = pg_session.execute(text("SELECT id, email, hashed_password FROM users")).fetchall()
+        assert len(all_users) == 0, "Direct table query on users table must return 0 rows when unauthenticated"
+
+        # Security definer function allows single-user lookup for the specific credentials
+        auth_row = pg_session.execute(text("SELECT id, email, hashed_password FROM authenticate_user_lookup('login_test@worker.org', NULL)")).fetchone()
+        assert auth_row is not None
+        assert auth_row[0] == worker_id
+        assert auth_row[1] == 'login_test@worker.org'
+
+        # Non-matching credentials return 0 rows
+        non_existent = pg_session.execute(text("SELECT id, email, hashed_password FROM authenticate_user_lookup('nobody@worker.org', NULL)")).fetchone()
+        assert non_existent is None
+
+    def test_unauthenticated_cannot_insert_worker_profile(self, pg_session):
+        """Unauthenticated client cannot insert worker profile for arbitrary user under hardened RLS."""
+        pg_session.execute(text("SELECT set_config('app.current_user_id', '', true)"))
+        pg_session.execute(text("SELECT set_config('app.current_user_role', '', true)"))
+
+        with pytest.raises(Exception) as exc_info:
+            pg_session.execute(text("""
+                INSERT INTO worker_profiles (id, user_id, city, consented_location_tracking, created_at, updated_at)
+                VALUES ('prof-unauth-violating', 'arbitrary-user-id', 'Hyderabad', false, NOW(), NOW())
+            """))
+            pg_session.commit()
+        assert "row-level security" in str(exc_info.value).lower() or "policy" in str(exc_info.value).lower()
 
     def test_report_source_insert_and_isolation(self, pg_session):
         """Report owner can insert report sources; other workers cannot."""

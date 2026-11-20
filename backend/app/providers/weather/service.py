@@ -109,7 +109,20 @@ class WeatherProviderService:
                     for e in existing
                 ]
 
-        # Otherwise fetch from provider (ERA5 historical reanalysis or demo in non-production)
+        # Otherwise fetch from official meteorological providers (IMD AWS network or ERA5 reanalysis)
+        if settings.IMD_API_KEY:
+            try:
+                imd_results = await self.imd_provider.get_observations_for_interval(
+                    latitude, longitude, start_time, end_time
+                )
+                if imd_results:
+                    if db:
+                        for r in imd_results:
+                            self._persist_observation(db, r)
+                    return imd_results
+            except Exception as e:
+                logger.warning(f"IMD interval retrieval failed: {e}")
+
         if settings.CDS_API_KEY:
             try:
                 era5_results = await self.era5_provider.get_observations_for_interval(

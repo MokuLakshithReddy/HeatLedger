@@ -11,6 +11,32 @@ CREATE OR REPLACE FUNCTION current_app_user_role() RETURNS text AS $$
   SELECT NULLIF(current_setting('app.current_user_role', true), '');
 $$ LANGUAGE sql STABLE;
 
+-- Authentication Lookup Function (SECURITY DEFINER)
+-- Enables unauthenticated login & registration existence checks without exposing the entire users table
+CREATE OR REPLACE FUNCTION authenticate_user_lookup(p_email text, p_phone text)
+RETURNS TABLE (
+    id text,
+    email text,
+    phone text,
+    hashed_password text,
+    role text,
+    is_active boolean,
+    preferred_language text,
+    full_name text
+)
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT u.id, u.email, u.phone, u.hashed_password, u.role, u.is_active, u.preferred_language, u.full_name
+    FROM users u
+    WHERE (p_email IS NOT NULL AND u.email = p_email)
+       OR (p_phone IS NOT NULL AND u.phone = p_phone)
+    LIMIT 1;
+END;
+$$ LANGUAGE plpgsql;
+
 -- 2. Enable and FORCE Row Level Security (RLS) on sensitive tables
 -- FORCE ensures table owners/application roles are also strictly subjected to RLS
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -55,14 +81,28 @@ ALTER TABLE cases FORCE ROW LEVEL SECURITY;
 ALTER TABLE case_notes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE case_notes FORCE ROW LEVEL SECURITY;
 
--- 3. Users: Unauthenticated lookup for login, public registration, and strict self/admin isolation
+ALTER TABLE organisations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organisations FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE organisation_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE organisation_members FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE analysis_runs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE analysis_runs FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE processing_jobs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE processing_jobs FORCE ROW LEVEL SECURITY;
+
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs FORCE ROW LEVEL SECURITY;
+
+-- 3. Users: Strict self and admin isolation (table-level unauthenticated queries return 0 rows)
 DROP POLICY IF EXISTS user_self_isolation ON users;
 DROP POLICY IF EXISTS user_select ON users;
 CREATE POLICY user_select ON users
     FOR SELECT
     USING (
-        current_app_user_id() IS NULL
-        OR id = current_app_user_id()
+        id = current_app_user_id()
         OR current_app_user_role() = 'system_admin'
     );
 
@@ -86,7 +126,7 @@ CREATE POLICY user_delete ON users
     FOR DELETE
     USING (id = current_app_user_id() OR current_app_user_role() = 'system_admin');
 
--- 4. Worker Profiles: Worker owns their profile; allow registration profile insertion
+-- 4. Worker Profiles: Worker owns their profile (requires matching active session identity)
 DROP POLICY IF EXISTS worker_profile_isolation ON worker_profiles;
 DROP POLICY IF EXISTS worker_profile_select ON worker_profiles;
 CREATE POLICY worker_profile_select ON worker_profiles
@@ -99,7 +139,6 @@ CREATE POLICY worker_profile_insert ON worker_profiles
     WITH CHECK (
         user_id = current_app_user_id()
         OR current_app_user_role() = 'system_admin'
-        OR (current_app_user_id() IS NULL AND EXISTS (SELECT 1 FROM users WHERE users.id = worker_profiles.user_id))
     );
 
 DROP POLICY IF EXISTS worker_profile_update ON worker_profiles;
@@ -405,3 +444,125 @@ CREATE POLICY org_case_notes_insert ON case_notes
               AND om.role IN ('admin', 'caseworker')
         )
     );
+
+-- 18. Organisations: Public can read approved orgs; admins manage orgs
+DROP POLICY IF EXISTS org_public_approved_select ON organisations;
+CREATE POLICY org_public_approved_select ON organisations
+    FOR SELECT
+    USING (
+        is_approved = TRUE
+        OR current_app_user_role() = 'system_admin'
+        OR EXISTS (
+            SELECT 1 FROM organisation_members om
+            WHERE om.organisation_id = organisations.id
+              AND om.user_id = current_app_user_id()
+        )
+    );
+
+DROP POLICY IF EXISTS org_insert ON organisations;
+CREATE POLICY org_insert ON organisations
+    FOR INSERT
+    WITH CHECK (
+        current_app_user_role() = 'system_admin'
+        OR is_approved = FALSE
+    );
+
+DROP POLICY IF EXISTS org_admin_update ON organisations;
+CREATE POLICY org_admin_update ON organisations
+    FOR UPDATE
+    USING (current_app_user_role() = 'system_admin')
+    WITH CHECK (current_app_user_role() = 'system_admin');
+
+DROP POLICY IF EXISTS org_admin_delete ON organisations;
+CREATE POLICY org_admin_delete ON organisations
+    FOR DELETE
+    USING (current_app_user_role() = 'system_admin');
+
+-- 19. Organisation Members: Members can read within their org; org admin manages members
+DROP POLICY IF EXISTS org_members_select ON organisation_members;
+CREATE POLICY org_members_select ON organisation_members
+    FOR SELECT
+    USING (
+        user_id = current_app_user_id()
+        OR current_app_user_role() = 'system_admin'
+        OR EXISTS (
+            SELECT 1 FROM organisation_members om
+            WHERE om.organisation_id = organisation_members.organisation_id
+              AND om.user_id = current_app_user_id()
+              AND om.is_active = TRUE
+        )
+    );
+
+DROP POLICY IF EXISTS org_members_write ON organisation_members;
+CREATE POLICY org_members_write ON organisation_members
+    FOR ALL
+    USING (
+        current_app_user_role() = 'system_admin'
+        OR EXISTS (
+            SELECT 1 FROM organisation_members om
+            WHERE om.organisation_id = organisation_members.organisation_id
+              AND om.user_id = current_app_user_id()
+              AND om.is_active = TRUE
+              AND om.role = 'admin'
+        )
+    )
+    WITH CHECK (
+        current_app_user_role() = 'system_admin'
+        OR EXISTS (
+            SELECT 1 FROM organisation_members om
+            WHERE om.organisation_id = organisation_members.organisation_id
+              AND om.user_id = current_app_user_id()
+              AND om.is_active = TRUE
+              AND om.role = 'admin'
+        )
+    );
+
+-- 20. Analysis Runs: Worker owns their analysis runs
+DROP POLICY IF EXISTS analysis_runs_isolation ON analysis_runs;
+CREATE POLICY analysis_runs_isolation ON analysis_runs
+    FOR ALL
+    USING (worker_id = current_app_user_id() OR current_app_user_role() = 'system_admin')
+    WITH CHECK (worker_id = current_app_user_id() OR current_app_user_role() = 'system_admin');
+
+-- 21. Processing Jobs: Worker can view their own triggered jobs; system admin has full access
+DROP POLICY IF EXISTS processing_jobs_isolation ON processing_jobs;
+CREATE POLICY processing_jobs_isolation ON processing_jobs
+    FOR ALL
+    USING (
+        current_app_user_role() = 'system_admin'
+        OR (payload IS NOT NULL AND payload->>'worker_id' = current_app_user_id())
+    )
+    WITH CHECK (
+        current_app_user_role() = 'system_admin'
+        OR (payload IS NOT NULL AND payload->>'worker_id' = current_app_user_id())
+    );
+
+-- 22. Audit Logs: Worker can view their own audit logs; append-only for active sessions
+DROP POLICY IF EXISTS audit_logs_select ON audit_logs;
+CREATE POLICY audit_logs_select ON audit_logs
+    FOR SELECT
+    USING (
+        user_id = current_app_user_id()
+        OR current_app_user_role() = 'system_admin'
+    );
+
+DROP POLICY IF EXISTS audit_logs_insert ON audit_logs;
+CREATE POLICY audit_logs_insert ON audit_logs
+    FOR INSERT
+    WITH CHECK (
+        user_id = current_app_user_id()
+        OR user_id IS NULL
+        OR current_app_user_role() = 'system_admin'
+    );
+
+-- 23. Ensure runtime application role has appropriate permissions
+DO $$
+BEGIN
+    IF EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'heatledger_app_user') THEN
+        GRANT USAGE ON SCHEMA public TO heatledger_app_user;
+        GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO heatledger_app_user;
+        GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO heatledger_app_user;
+        GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO heatledger_app_user;
+    END IF;
+END
+$$;

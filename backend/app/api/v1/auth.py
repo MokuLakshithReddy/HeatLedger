@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from datetime import timedelta
@@ -11,6 +12,33 @@ from backend.app.api.deps import get_current_user, log_audit
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
+def lookup_auth_user(db: Session, email: Optional[str] = None, phone: Optional[str] = None) -> Optional[User]:
+    bind = db.get_bind()
+    if bind and bind.dialect.name == "postgresql":
+        from sqlalchemy import text
+        row = db.execute(
+            text("SELECT id, email, phone, hashed_password, role, is_active, preferred_language, full_name FROM authenticate_user_lookup(:email, :phone)"),
+            {"email": email, "phone": phone}
+        ).first()
+        if row:
+            return User(
+                id=row.id,
+                email=row.email,
+                phone=row.phone,
+                hashed_password=row.hashed_password,
+                role=row.role,
+                is_active=row.is_active,
+                preferred_language=row.preferred_language,
+                full_name=row.full_name,
+            )
+        return None
+    else:
+        if email:
+            return db.query(User).filter(User.email == email).first()
+        if phone:
+            return db.query(User).filter(User.phone == phone).first()
+        return None
+
 @router.post("/register", response_model=Token)
 def register_user(
     reg_in: UserRegister,
@@ -21,14 +49,10 @@ def register_user(
     assigned_role = "worker"
     
     # Check if email or phone already exists
-    if reg_in.email:
-        existing = db.query(User).filter(User.email == reg_in.email).first()
-        if existing:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
-    if reg_in.phone:
-        existing = db.query(User).filter(User.phone == reg_in.phone).first()
-        if existing:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
+    if reg_in.email and lookup_auth_user(db, email=reg_in.email):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already registered")
+    if reg_in.phone and lookup_auth_user(db, phone=reg_in.phone):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
     
     hashed_pw = get_password_hash(reg_in.password)
     user = User(
@@ -91,11 +115,7 @@ def login_user(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    user = None
-    if login_in.email:
-        user = db.query(User).filter(User.email == login_in.email).first()
-    elif login_in.phone:
-        user = db.query(User).filter(User.phone == login_in.phone).first()
+    user = lookup_auth_user(db, email=login_in.email, phone=login_in.phone)
 
     # SEC-05: Uniform error to prevent account enumeration
     if not user or not verify_password(login_in.password, user.hashed_password):

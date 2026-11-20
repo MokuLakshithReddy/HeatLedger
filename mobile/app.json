@@ -11,7 +11,15 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.heatledger.worker"
+      "bundleIdentifier": "com.heatledger.worker",
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "location",
+          "fetch"
+        ],
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "HeatLedger requires background location to record temperature and environmental exposure during active delivery shifts with your explicit consent.",
+        "NSLocationWhenInUseUsageDescription": "HeatLedger requires location access to document environmental conditions during your delivery shift."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -21,12 +29,21 @@
       "permissions": [
         "ACCESS_COARSE_LOCATION",
         "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
         "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
         "POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "HeatLedger requires background location to record temperature and environmental exposure during active delivery shifts with your explicit consent.",
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ]
     ],
     "scheme": "heatledger"
   }

@@ -28,6 +28,7 @@ services:
       db:
         condition: service_healthy
     environment:
+      MIGRATION_DATABASE_URL: postgresql://heatledger_user:heatledger_pass@db:5432/heatledger_db
       DATABASE_URL: postgresql://heatledger_app_user:heatledger_app_pass@db:5432/heatledger_db
       APP_SECRET_KEY: dev-docker-secret-key-32-chars-long-minimum-here
       ENVIRONMENT: development

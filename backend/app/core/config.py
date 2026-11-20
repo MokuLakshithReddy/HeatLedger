@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     
     # Database
     DATABASE_URL: str = Field(default="sqlite:///./heatledger.db")
+    MIGRATION_DATABASE_URL: Optional[str] = Field(default=None)
     TEST_DATABASE_URL: str = Field(default="sqlite:///./test_heatledger.db")
     
     # Storage

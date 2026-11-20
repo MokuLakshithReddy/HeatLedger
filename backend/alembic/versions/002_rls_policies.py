@@ -61,6 +61,17 @@ def downgrade() -> None:
         DROP POLICY IF EXISTS org_cases_delete ON cases;
         DROP POLICY IF EXISTS org_case_notes_select ON case_notes;
         DROP POLICY IF EXISTS org_case_notes_insert ON case_notes;
+        DROP POLICY IF EXISTS org_public_approved_select ON organisations;
+        DROP POLICY IF EXISTS org_insert ON organisations;
+        DROP POLICY IF EXISTS org_admin_update ON organisations;
+        DROP POLICY IF EXISTS org_admin_delete ON organisations;
+        DROP POLICY IF EXISTS org_members_select ON organisation_members;
+        DROP POLICY IF EXISTS org_members_write ON organisation_members;
+        DROP POLICY IF EXISTS analysis_runs_isolation ON analysis_runs;
+        DROP POLICY IF EXISTS processing_jobs_isolation ON processing_jobs;
+        DROP POLICY IF EXISTS audit_logs_select ON audit_logs;
+        DROP POLICY IF EXISTS audit_logs_insert ON audit_logs;
+        DROP FUNCTION IF EXISTS authenticate_user_lookup(text, text);
         DROP FUNCTION IF EXISTS current_app_user_id();
         DROP FUNCTION IF EXISTS current_app_user_role();
         """)

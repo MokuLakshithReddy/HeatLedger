@@ -186,7 +186,7 @@ class OrgService:
                 average_heat_exposure_hours=0.0,
                 average_shift_duration_hours=0.0,
                 total_cases_filed=db.query(Case).filter(Case.organisation_id == organisation_id).count(),
-                common_high_heat_time_bands=["13:00 - 16:30 IST (Peak Solar/HI Danger)"],
+                common_high_heat_time_bands=[],
                 anonymity_notice="Privacy criteria satisfied: Aggregate metrics calculated from explicitly shared reports only.",
             )
 
@@ -240,7 +240,7 @@ class OrgService:
                     time_bands.append(f"{bucket:02d}:00 - {bucket+2:02d}:00 IST ({count} severe heat intervals)")
 
         if not time_bands:
-            time_bands = ["No severe heat intervals recorded in authorized cohort shifts"]
+            time_bands = []
 
         return AggregateCohortAnalytics(
             cohort_name=cohort_name,

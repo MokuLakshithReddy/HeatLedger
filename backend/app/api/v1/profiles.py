@@ -331,6 +331,7 @@ def request_account_deletion(
         try:
             shutil.rmtree(user_storage_dir)
         except Exception as e:
+            failed_files.append(user_storage_dir)
             logger.warning(f"Could not remove local storage dir {user_storage_dir}: {e}")
 
     # 4. Genuine Database Purging & Cascade
@@ -382,9 +383,15 @@ def request_account_deletion(
     db.commit()
 
     deletion_status = "PARTIALLY_FAILED" if failed_files else "COMPLETED"
+    is_success = len(failed_files) == 0
+    message = (
+        "All linked worker data, location samples, earnings, and files have been permanently purged."
+        if is_success
+        else "Account anonymized and records purged, but some storage files or directories could not be deleted from storage. Remediation or retry is required."
+    )
 
     return {
-        "success": True,
+        "success": is_success,
         "deletion_status": deletion_status,
         "failed_files": failed_files,
         "purged_records": {
@@ -399,5 +406,5 @@ def request_account_deletion(
             "storage_files_purged": files_purged,
         },
         "user_anonymized": True,
-        "message": "All linked worker data, location samples, earnings, and files have been permanently purged.",
+        "message": message,
     }

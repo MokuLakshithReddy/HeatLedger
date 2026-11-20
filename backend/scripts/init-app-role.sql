@@ -11,8 +11,15 @@ BEGIN
 END
 $$;
 
-GRANT USAGE, CREATE ON SCHEMA public TO heatledger_app_user;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO heatledger_app_user;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO heatledger_app_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO heatledger_app_user;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO heatledger_app_user;
+-- Restricted runtime role gets USAGE (not CREATE) on public schema
+GRANT USAGE ON SCHEMA public TO heatledger_app_user;
+
+-- DML privileges only on all tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO heatledger_app_user;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO heatledger_app_user;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO heatledger_app_user;
+
+-- Default privileges for tables, sequences, and functions created by the database owner
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO heatledger_app_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO heatledger_app_user;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO heatledger_app_user;

@@ -32,3 +32,51 @@ def test_haversine_distance():
     dist = haversine_distance_km(17.4485, 78.4714, 17.3616, 78.4747)
     # Begumpet to Charminar is approx 9.6 km
     assert 8.0 < dist < 12.0
+
+def test_imd_station_resolution_and_parsing():
+    from backend.app.providers.weather.imd import find_nearest_imd_station, IMDWeatherProvider
+    from datetime import datetime, timezone
+
+    # Coordinate near Begumpet Hyderabad resolves to Begumpet station
+    st = find_nearest_imd_station(17.448, 78.468)
+    assert st["station_id"] == "43128"
+    assert "Begumpet" in st["station_name"]
+
+    # Test parser behavior with official IMD fields
+    provider = IMDWeatherProvider()
+    assert provider.provider_name == "IMD"
+
+def test_era5_land_parsing_and_multi_day_payload():
+    from backend.app.providers.weather.era5 import ERA5LandProvider, kelvin_to_celsius, calculate_rh_from_dewpoint
+    from datetime import datetime, timezone
+
+    provider = ERA5LandProvider()
+    assert provider.provider_name == "ERA5_LAND"
+
+    # Test conversion
+    c = kelvin_to_celsius(310.15) # 37°C
+    assert abs(c - 37.0) < 0.1
+
+    rh = calculate_rh_from_dewpoint(35.0, 25.0)
+    assert rh is not None
+    assert 45.0 < rh < 65.0
+
+    # Parse response without fabricated fallbacks
+    sample_response = {
+        "series": [
+            {
+                "time": "2026-05-15T12:00:00Z",
+                "2m_temperature": 313.15, # 40°C
+                "2m_dewpoint_temperature": 298.15, # 25°C
+                "10m_u_component_of_wind": 2.5,
+                "10m_v_component_of_wind": 1.5,
+            }
+        ]
+    }
+    parsed = provider.parse_era5_response(sample_response, 17.38, 78.48, datetime(2026, 5, 15, 12, 0, tzinfo=timezone.utc))
+    assert len(parsed) == 1
+    obs = parsed[0]
+    assert abs(obs.temperature_celsius - 40.0) < 0.1
+    assert obs.heat_index_celsius is not None
+    assert obs.heat_index_celsius > 45.0 # High heat index
+    assert obs.data_type == "GRIDDED_REANALYSIS"
