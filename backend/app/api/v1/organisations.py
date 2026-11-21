@@ -41,7 +41,11 @@ def register_organisation(
     if existing:
         raise HTTPException(status_code=409, detail="Organisation slug already exists")
     
+    from backend.app.models.entities import generate_uuid, OrganisationMember
+
+    org_id = generate_uuid()
     org = Organisation(
+        id=org_id,
         name=org_in.name,
         slug=org_in.slug,
         contact_email=org_in.contact_email,
@@ -50,19 +54,19 @@ def register_organisation(
         is_approved=False, # SEC-02: Always unapproved until system admin verification
     )
     db.add(org)
-    db.commit()
-    db.refresh(org)
 
     # Creator becomes initial OrganisationMember admin (pending org approval)
-    from backend.app.models.entities import OrganisationMember
+    # Adding member in the same transaction guarantees creator linkage for RLS visibility upon commit
     member = OrganisationMember(
-        organisation_id=org.id,
+        id=generate_uuid(),
+        organisation_id=org_id,
         user_id=current_user.id,
         role="admin",
         is_active=False, # SEC-02: Remains inactive until system admin approves organisation
     )
     db.add(member)
     db.commit()
+    db.refresh(org)
 
     log_audit(
         db, current_user.id, "ORG_REGISTERED_PENDING_APPROVAL", "Organisation", org.id,

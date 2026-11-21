@@ -11,6 +11,7 @@ import { mobileApiFetch } from "@/lib/api";
 
 export const BACKGROUND_LOCATION_TASK = "HEATLEDGER_BACKGROUND_LOCATION_TASK";
 const ACTIVE_SHIFT_STORE_KEY = "heatledger_active_shift_id";
+const OFFLINE_QUEUE_KEY = "heatledger_offline_location_queue";
 
 let locationSubscription: Location.LocationSubscription | null = null;
 let currentActiveShiftId: string | null = null;
@@ -22,6 +23,97 @@ export interface LocationCoordinates {
   accuracyMeters: number;
   altitudeMeters?: number | null;
   speedMps?: number | null;
+  recordedAt?: string | null;
+}
+
+interface QueuedLocationSample {
+  shiftId: string;
+  coords: LocationCoordinates;
+  enqueuedAt: number;
+}
+
+async function getOfflineQueue(): Promise<QueuedLocationSample[]> {
+  try {
+    let json: string | null = null;
+    if (Platform.OS === "web") {
+      json = localStorage.getItem(OFFLINE_QUEUE_KEY);
+    } else {
+      json = await SecureStore.getItemAsync(OFFLINE_QUEUE_KEY);
+    }
+    if (json) {
+      return JSON.parse(json);
+    }
+  } catch (e) {
+    console.warn("Could not read offline location queue:", e);
+  }
+  return [];
+}
+
+async function saveOfflineQueue(queue: QueuedLocationSample[]): Promise<void> {
+  try {
+    const trimmed = queue.slice(-200);
+    const json = JSON.stringify(trimmed);
+    if (Platform.OS === "web") {
+      localStorage.setItem(OFFLINE_QUEUE_KEY, json);
+    } else {
+      await SecureStore.setItemAsync(OFFLINE_QUEUE_KEY, json);
+    }
+  } catch (e) {
+    console.warn("Could not save offline location queue:", e);
+  }
+}
+
+async function enqueueOfflineLocation(shiftId: string, coords: LocationCoordinates): Promise<void> {
+  const queue = await getOfflineQueue();
+  queue.push({ shiftId, coords, enqueuedAt: Date.now() });
+  await saveOfflineQueue(queue);
+}
+
+async function flushOfflineLocationQueue(): Promise<void> {
+  const queue = await getOfflineQueue();
+  if (queue.length === 0) return;
+
+  const byShift: Record<string, QueuedLocationSample[]> = {};
+  for (const item of queue) {
+    if (!byShift[item.shiftId]) byShift[item.shiftId] = [];
+    byShift[item.shiftId].push(item);
+  }
+
+  const remaining: QueuedLocationSample[] = [];
+
+  for (const [shiftId, samples] of Object.entries(byShift)) {
+    try {
+      const batchPayload = {
+        samples: samples.map((s) => ({
+          latitude: s.coords.latitude,
+          longitude: s.coords.longitude,
+          accuracy_meters: s.coords.accuracyMeters,
+          altitude_meters: s.coords.altitudeMeters || null,
+          speed_mps: s.coords.speedMps || null,
+          recorded_at: s.coords.recordedAt || new Date(s.enqueuedAt).toISOString(),
+        })),
+      };
+
+      await mobileApiFetch(`/shifts/${shiftId}/location-samples/batch`, {
+        method: "POST",
+        body: JSON.stringify(batchPayload),
+      });
+    } catch (e: any) {
+      if (
+        e.message &&
+        (e.message.includes("403") ||
+          e.message.includes("revoked") ||
+          e.message.includes("not active") ||
+          e.message.includes("404"))
+      ) {
+        console.warn(`Discarding queued locations for shift ${shiftId}: ${e.message}`);
+      } else {
+        remaining.push(...samples);
+      }
+    }
+  }
+
+  await saveOfflineQueue(remaining);
 }
 
 async function persistActiveShiftId(shiftId: string | null): Promise<void> {
@@ -68,19 +160,23 @@ try {
         return;
       }
       if (data && (data as any).locations && (data as any).locations.length > 0) {
-        const loc = (data as any).locations[0];
+        const locations = (data as any).locations as any[];
         const shiftId = currentActiveShiftId || (await getStoredActiveShiftId());
         if (shiftId) {
-          const now = Date.now();
-          if (now - lastSampleTimestamp >= 45000) {
-            lastSampleTimestamp = now;
-            await LocationTrackingService.recordSample(shiftId, {
-              latitude: loc.coords.latitude,
-              longitude: loc.coords.longitude,
-              accuracyMeters: loc.coords.accuracy || 10.0,
-              altitudeMeters: loc.coords.altitude,
-              speedMps: loc.coords.speed,
-            });
+          for (const loc of locations) {
+            if (!loc || !loc.coords) continue;
+            const sampleTime = loc.timestamp || Date.now();
+            if (sampleTime - lastSampleTimestamp >= 45000 || lastSampleTimestamp === 0) {
+              lastSampleTimestamp = sampleTime;
+              await LocationTrackingService.recordSample(shiftId, {
+                latitude: loc.coords.latitude,
+                longitude: loc.coords.longitude,
+                accuracyMeters: loc.coords.accuracy || 10.0,
+                altitudeMeters: loc.coords.altitude,
+                speedMps: loc.coords.speed,
+                recordedAt: new Date(sampleTime).toISOString(),
+              });
+            }
           }
         }
       }
@@ -195,14 +291,37 @@ export const LocationTrackingService = {
           accuracy_meters: coords.accuracyMeters,
           altitude_meters: coords.altitudeMeters || null,
           speed_mps: coords.speedMps || null,
+          recorded_at: coords.recordedAt || null,
         }),
       });
+      // Drain and flush pending queued items on successful connectivity
+      await flushOfflineLocationQueue();
     } catch (e: any) {
-      if (e.message && (e.message.includes("403") || e.message.includes("revoked") || e.message.includes("not active"))) {
+      if (
+        e.message &&
+        (e.message.includes("403") ||
+          e.message.includes("revoked") ||
+          e.message.includes("not active") ||
+          e.message.includes("Cannot record location"))
+      ) {
         console.warn("LocationTrackingService: Consent revoked or shift inactive. Halting tracking.");
         await LocationTrackingService.stopTracking();
+        await saveOfflineQueue([]);
+      } else {
+        // Enqueue to persistent offline queue for replay upon reconnection
+        console.warn("LocationTrackingService: Network error recording sample. Enqueueing offline.");
+        await enqueueOfflineLocation(shiftId, coords);
       }
     }
+  },
+
+  async flushOfflineQueue(): Promise<void> {
+    await flushOfflineLocationQueue();
+  },
+
+  async getOfflineQueueCount(): Promise<number> {
+    const queue = await getOfflineQueue();
+    return queue.length;
   },
 
   async stopTracking(): Promise<void> {

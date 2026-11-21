@@ -80,3 +80,14 @@ def test_era5_land_parsing_and_multi_day_payload():
     assert obs.heat_index_celsius is not None
     assert obs.heat_index_celsius > 45.0 # High heat index
     assert obs.data_type == "GRIDDED_REANALYSIS"
+
+    # Test strict bounding with end_time
+    bounded = provider.parse_era5_response(
+        sample_response,
+        17.38,
+        78.48,
+        base_time=datetime(2026, 5, 15, 13, 0, tzinfo=timezone.utc),
+        end_time=datetime(2026, 5, 15, 15, 0, tzinfo=timezone.utc),
+    )
+    # The record at 12:00 is outside [13:00, 15:00], so it must be excluded
+    assert len(bounded) == 0

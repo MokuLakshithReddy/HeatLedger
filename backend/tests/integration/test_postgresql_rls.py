@@ -257,3 +257,98 @@ class TestPostgreSQLRowLevelSecurity:
             """), {"rid": rep_a})
             pg_session.commit()
         assert "row-level security" in str(exc_info.value).lower() or "policy" in str(exc_info.value).lower()
+
+    def test_registration_full_flow_under_restricted_role(self, pg_session):
+        """Full registration flow: user insertion + profile creation + post-commit refresh under restricted role."""
+        new_uid = "worker-reg-flow-test-01"
+        new_email = "new_worker_rls@example.org"
+
+        # Simulate registration: identity set before inserting and committed
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, false)"), {"uid": new_uid})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', false)"))
+
+        pg_session.execute(text("""
+            INSERT INTO users (id, email, hashed_password, role, preferred_language, is_active, created_at, updated_at)
+            VALUES (:uid, :email, 'hash123', 'worker', 'en', true, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"uid": new_uid, "email": new_email})
+
+        pg_session.execute(text("""
+            INSERT INTO worker_profiles (id, user_id, city, consented_location_tracking, created_at, updated_at)
+            VALUES ('prof-flow-01', :uid, 'Hyderabad', false, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"uid": new_uid})
+        pg_session.commit()
+
+        # Re-apply identity for post-commit read (simulating after_begin event)
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": new_uid})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', true)"))
+
+        user_row = pg_session.execute(text("SELECT id, email FROM users WHERE id = :uid"), {"uid": new_uid}).fetchone()
+        assert user_row is not None
+        assert user_row[0] == new_uid
+
+        prof_row = pg_session.execute(text("SELECT id, user_id FROM worker_profiles WHERE user_id = :uid"), {"uid": new_uid}).fetchone()
+        assert prof_row is not None
+        assert prof_row[1] == new_uid
+
+    def test_organisation_operations_non_recursive_rls(self, pg_session):
+        """Validates non-recursive organisation membership checks and initial registration authorization."""
+        admin_uid = "org-founder-test"
+        org_id = "org-advocacy-rls-test"
+
+        # 1. Founder registers new unapproved organisation with initial pending admin membership
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, false)"), {"uid": admin_uid})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', false)"))
+
+        # Seed founder user
+        pg_session.execute(text("""
+            INSERT INTO users (id, email, hashed_password, role, preferred_language, is_active, created_at, updated_at)
+            VALUES (:uid, 'founder@union.org', 'hash', 'worker', 'en', true, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"uid": admin_uid})
+
+        # Insert unapproved organisation and member
+        pg_session.execute(text("""
+            INSERT INTO organisations (id, name, slug, contact_email, org_type, is_approved, created_at, updated_at)
+            VALUES (:oid, 'Advocacy Union', 'advocacy-union-rls', 'info@union.org', 'union', false, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"oid": org_id})
+
+        pg_session.execute(text("""
+            INSERT INTO organisation_members (id, organisation_id, user_id, role, is_active, created_at)
+            VALUES ('mem-founder-01', :oid, :uid, 'admin', false, NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"oid": org_id, "uid": admin_uid})
+        pg_session.commit()
+
+        # Founder can read their own pending organisation
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": admin_uid})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', true)"))
+        visible_org = pg_session.execute(text("SELECT id, name FROM organisations WHERE id = :oid"), {"oid": org_id}).fetchone()
+        assert visible_org is not None
+        assert visible_org[0] == org_id
+
+        # Third-party worker cannot read this unapproved organisation
+        outsider_uid = "outsider-worker-01"
+        pg_session.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": outsider_uid})
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'worker', true)"))
+        outsider_view = pg_session.execute(text("SELECT id FROM organisations WHERE id = :oid"), {"oid": org_id}).fetchone()
+        assert outsider_view is None
+
+    def test_security_definer_functions_not_executable_by_public(self, pg_session):
+        """Verifies that SECURITY DEFINER functions have execute revoked from PUBLIC."""
+        funcs = [
+            "authenticate_user_lookup(text, text)",
+            "is_org_member(text, text)",
+            "is_org_admin(text, text)",
+            "is_org_caseworker(text, text)",
+            "is_user_linked_to_org(text, text)",
+            "org_has_members(text)",
+        ]
+        for fn in funcs:
+            has_priv = pg_session.execute(
+                text("SELECT has_function_privilege('public', :fn, 'execute')"),
+                {"fn": fn}
+            ).scalar()
+            assert has_priv is False, f"Function {fn} must not be executable by PUBLIC"

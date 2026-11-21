@@ -1,3 +1,4 @@
+import logging
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -6,6 +7,8 @@ from alembic import context
 from backend.app.core.config import settings
 from backend.app.core.database import Base
 import backend.app.models
+
+logger = logging.getLogger("alembic.env")
 
 # this is the Alembic Config object
 config = context.config
@@ -16,6 +19,12 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 def get_url():
+    if not settings.MIGRATION_DATABASE_URL and settings.DATABASE_URL.startswith(("postgres://", "postgresql://")):
+        logger.warning(
+            "SECURITY/ARCHITECTURE WARNING: MIGRATION_DATABASE_URL is not set. Falling back to runtime DATABASE_URL. "
+            "In production, Alembic migrations must execute under a dedicated schema-owner database role (e.g. heatledger_owner), "
+            "while the FastAPI runtime executes as a restricted NOBYPASSRLS application role (e.g. heatledger_app_user)."
+        )
     url = settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL
     if url.startswith("postgres://"):
         url = url.replace("postgres://", "postgresql://", 1)

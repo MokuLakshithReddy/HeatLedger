@@ -54,8 +54,24 @@ def register_user(
     if reg_in.phone and lookup_auth_user(db, phone=reg_in.phone):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
     
+    from backend.app.models.entities import generate_uuid
+    user_id = generate_uuid()
+
+    # SEC-RLS: Set session identity BEFORE inserting user or refreshing post-commit
+    db.info["current_user_id"] = str(user_id)
+    db.info["current_user_role"] = str(assigned_role)
+    try:
+        bind = db.get_bind()
+        if bind and bind.dialect.name == "postgresql":
+            from sqlalchemy import text
+            db.execute(text("SELECT set_config('app.current_user_id', :uid, false)"), {"uid": str(user_id)})
+            db.execute(text("SELECT set_config('app.current_user_role', :role, false)"), {"role": str(assigned_role)})
+    except Exception:
+        pass
+
     hashed_pw = get_password_hash(reg_in.password)
     user = User(
+        id=user_id,
         email=reg_in.email,
         phone=reg_in.phone,
         hashed_password=hashed_pw,
@@ -67,24 +83,10 @@ def register_user(
         updated_at=utc_now(),
     )
     db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    # SEC-RLS: Set session identity for newly created user to permit profile creation under RLS
-    db.info["current_user_id"] = str(user.id)
-    db.info["current_user_role"] = str(user.role)
-    try:
-        bind = db.get_bind()
-        if bind and bind.dialect.name == "postgresql":
-            from sqlalchemy import text
-            db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
-            db.execute(text("SELECT set_config('app.current_user_role', :role, true)"), {"role": str(user.role)})
-    except Exception:
-        pass
 
     # Worker profile
     profile = WorkerProfile(
-        user_id=user.id,
+        user_id=user_id,
         primary_platforms=reg_in.primary_platforms or [],
         vehicle_type=reg_in.vehicle_type,
         city=reg_in.city or "Hyderabad",
@@ -94,6 +96,7 @@ def register_user(
     )
     db.add(profile)
     db.commit()
+    db.refresh(user)
 
     log_audit(db, user.id, "USER_REGISTERED", "User", user.id, {"role": user.role}, request)
 

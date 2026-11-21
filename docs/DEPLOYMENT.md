@@ -87,3 +87,39 @@ docker compose exec backend alembic upgrade head
    - `X-Frame-Options: DENY`
    - `X-Content-Type-Options: nosniff`
    - `Referrer-Policy: strict-origin-when-cross-origin`
+
+---
+
+## 5. Database Roles & Migration Architecture (Least Privilege & RLS)
+
+HeatLedger enforces strict privilege separation between schema migrations (DDL) and runtime application queries (DML with Row-Level Security):
+
+### 5.1 Dual Database Connection Model
+
+1. **`MIGRATION_DATABASE_URL` (Schema Owner):**
+   - Connects as the database/schema owner role (e.g., `heatledger_owner`).
+   - Has DDL privileges (`CREATE TABLE`, `ALTER TABLE`, `CREATE POLICY`, `SECURITY DEFINER` function management).
+   - Used exclusively by Alembic during build/release deployment steps.
+   - Example: `postgresql://heatledger_owner:OwnerSecret@postgres:5432/heatledger`
+
+2. **`DATABASE_URL` (Runtime Application Role):**
+   - Connects as the restricted application role (e.g., `heatledger_app_user`).
+   - Configured with `NOBYPASSRLS`. All queries strictly adhere to Row-Level Security policies.
+   - Has DML privileges only (`SELECT`, `INSERT`, `UPDATE`, `DELETE`) on application tables.
+   - Example: `postgresql://heatledger_app_user:AppSecret@postgres:5432/heatledger`
+
+### 5.2 Release Migration Workflow
+
+In production Kubernetes / ECS / PaaS deployments:
+- **Do not** run Alembic migrations inside the FastAPI application container startup script across multiple autoscaled replicas.
+- **Run migrations as an isolated pre-deployment release job** prior to routing traffic to new application instances:
+  ```bash
+  # Execute schema migrations using owner credentials in an isolated release container
+  alembic -c backend/alembic.ini upgrade head
+  ```
+- **Verify migration reversibility in CI/CD:**
+  ```bash
+  # Test schema rollback and re-application
+  alembic -c backend/alembic.ini downgrade 001_initial_schema
+  alembic -c backend/alembic.ini upgrade head
+  ```

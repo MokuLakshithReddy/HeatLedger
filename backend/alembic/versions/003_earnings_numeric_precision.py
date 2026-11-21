@@ -97,6 +97,10 @@ def downgrade() -> None:
     bind = op.get_bind()
     is_postgres = bind.dialect.name == "postgresql"
 
+    # Populate any NULL statement periods with created_at before restoring NOT NULL constraints
+    op.execute("UPDATE earning_entries SET statement_period_start = created_at WHERE statement_period_start IS NULL")
+    op.execute("UPDATE earning_entries SET statement_period_end = created_at WHERE statement_period_end IS NULL")
+
     if is_postgres:
         op.alter_column(
             'evidence_reports',

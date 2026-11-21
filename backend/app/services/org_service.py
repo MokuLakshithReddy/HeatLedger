@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set
+from collections import defaultdict, Counter
 from sqlalchemy.orm import Session
 from fastapi import HTTPException, status
 
@@ -195,20 +196,28 @@ class OrgService:
             .filter(EvidenceReport.id.in_(shared_report_ids))
             .all()
         )
-        avg_heat = (
-            sum(r.total_extreme_heat_hours for r in reports) / len(reports)
-            if reports else 0.0
-        )
-        avg_shift = (
-            sum(r.total_hours_worked for r in reports) / len(reports)
-            if reports else 0.0
-        )
+        # Aggregate per-worker first to prevent contribution dominance by high-volume individual contributors
+        worker_reports: Dict[str, List[EvidenceReport]] = defaultdict(list)
+        for r in reports:
+            worker_reports[r.worker_id].append(r)
+
+        worker_avg_heats = [
+            sum(r.total_extreme_heat_hours for r in r_list) / len(r_list)
+            for r_list in worker_reports.values()
+            if r_list
+        ]
+        worker_avg_shifts = [
+            sum(r.total_hours_worked for r in r_list) / len(r_list)
+            for r_list in worker_reports.values()
+            if r_list
+        ]
+        avg_heat = sum(worker_avg_heats) / len(worker_avg_heats) if worker_avg_heats else 0.0
+        avg_shift = sum(worker_avg_shifts) / len(worker_avg_shifts) if worker_avg_shifts else 0.0
 
         # Derive common high-heat time bands strictly from authorized report shifts/intervals
         time_bands = []
         if shared_report_ids:
             from backend.app.models.entities import ReportSource, ExposureInterval
-            from collections import Counter
 
             authorized_shift_sources = (
                 db.query(ReportSource.source_id)
@@ -221,6 +230,11 @@ class OrgService:
             authorized_shift_ids = [s[0] for s in authorized_shift_sources]
 
             if authorized_shift_ids:
+                shift_worker_map = {
+                    s.id: s.worker_id
+                    for s in db.query(Shift.id, Shift.worker_id).filter(Shift.id.in_(authorized_shift_ids)).all()
+                }
+
                 intervals = (
                     db.query(ExposureInterval)
                     .filter(
@@ -229,15 +243,32 @@ class OrgService:
                     )
                     .all()
                 )
-                hour_counts = Counter()
+                bucket_workers: Dict[int, Set[str]] = defaultdict(set)
+                bucket_intervals: Counter = Counter()
+
                 for inv in intervals:
+                    w_id = shift_worker_map.get(inv.shift_id)
+                    if not w_id:
+                        continue
                     # Convert UTC to IST (+5:30)
                     ist_hour = (inv.start_time.hour + 5 + (1 if inv.start_time.minute >= 30 else 0)) % 24
                     bucket_start = (ist_hour // 2) * 2
-                    hour_counts[bucket_start] += 1
+                    bucket_workers[bucket_start].add(w_id)
+                    bucket_intervals[bucket_start] += 1
 
-                for bucket, count in hour_counts.most_common(3):
-                    time_bands.append(f"{bucket:02d}:00 - {bucket+2:02d}:00 IST ({count} severe heat intervals)")
+                # Suppress time bands with fewer than 2 distinct workers to prevent individual schedule re-identification
+                eligible_buckets = [
+                    (b, bucket_intervals[b], len(bucket_workers[b]))
+                    for b in bucket_workers
+                    if len(bucket_workers[b]) >= 2
+                ]
+                # Sort by worker diversity first, then severe interval frequency
+                eligible_buckets.sort(key=lambda x: (x[2], x[1]), reverse=True)
+
+                for bucket, count, w_count in eligible_buckets[:3]:
+                    time_bands.append(
+                        f"{bucket:02d}:00 - {bucket+2:02d}:00 IST ({count} severe heat intervals across {w_count} workers)"
+                    )
 
         if not time_bands:
             time_bands = []

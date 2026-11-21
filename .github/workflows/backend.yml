@@ -49,9 +49,10 @@ jobs:
       - name: Test Alembic Migrations against Clean PostgreSQL
         env:
           DATABASE_URL: postgresql://heatledger_user:heatledger_pass@localhost:5432/test_heatledger_db
+          MIGRATION_DATABASE_URL: postgresql://heatledger_user:heatledger_pass@localhost:5432/test_heatledger_db
         run: |
           alembic -c backend/alembic.ini upgrade head
-          alembic -c backend/alembic.ini downgrade -1
+          alembic -c backend/alembic.ini downgrade 001_initial_schema
           alembic -c backend/alembic.ini upgrade head
 
       - name: Provision Restricted Database Role for RLS Enforcement

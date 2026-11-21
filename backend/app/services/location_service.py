@@ -134,3 +134,5 @@ class LocationService:
         for c in created:
             db.refresh(c)
         return created
+
+    record_batch = record_batch_samples

@@ -80,6 +80,12 @@ class ERA5LandProvider(BaseWeatherProvider):
             curr += timedelta(days=1)
 
         # CDS API retrieval payload for ERA5-Land hourly gridded reanalysis
+        # If interval spans only a single date, request only the relevant hours
+        if start_time.date() == end_time.date():
+            hours = [f"{h:02d}:00" for h in range(start_time.hour, min(24, end_time.hour + 1))]
+        else:
+            hours = [f"{h:02d}:00" for h in range(24)]
+
         request_payload = {
             "dataset": "reanalysis-era5-land",
             "variable": [
@@ -91,7 +97,7 @@ class ERA5LandProvider(BaseWeatherProvider):
             "year": sorted(list(years)),
             "month": sorted(list(months)),
             "day": sorted(list(days)),
-            "time": [f"{h:02d}:00" for h in range(24)],
+            "time": hours,
             "area": [
                 round(latitude + 0.1, 2),  # North
                 round(longitude - 0.1, 2), # West
@@ -118,7 +124,7 @@ class ERA5LandProvider(BaseWeatherProvider):
                 
                 if resp.status_code in [200, 201]:
                     data = resp.json()
-                    return self.parse_era5_response(data, latitude, longitude, start_time)
+                    return self.parse_era5_response(data, latitude, longitude, start_time, end_time)
                 elif resp.status_code == 202:
                     # Async task queued in CDS processing queue; poll with backoff
                     job_data = resp.json()
@@ -137,8 +143,8 @@ class ERA5LandProvider(BaseWeatherProvider):
                                 if result_url:
                                     res_resp = await client.get(result_url, headers=headers)
                                     if res_resp.status_code == 200:
-                                        return self.parse_era5_response(res_resp.json(), latitude, longitude, start_time)
-                                return self.parse_era5_response(pdata, latitude, longitude, start_time)
+                                        return self.parse_era5_response(res_resp.json(), latitude, longitude, start_time, end_time)
+                                return self.parse_era5_response(pdata, latitude, longitude, start_time, end_time)
                             elif state in ["failed", "aborted"]:
                                 logger.warning(f"ERA5 CDS task failed: {pdata.get('error')}")
                                 return []
@@ -156,11 +162,20 @@ class ERA5LandProvider(BaseWeatherProvider):
         latitude: float,
         longitude: float,
         base_time: datetime,
+        end_time: Optional[datetime] = None,
     ) -> List[WeatherObservationDTO]:
         """Parses structured CDS ERA5-Land time series into WeatherObservationDTO objects."""
         results: List[WeatherObservationDTO] = []
         series = data.get("series", data.get("values", []))
         
+        def to_utc(dt: datetime) -> datetime:
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+
+        start_utc = to_utc(base_time)
+        end_utc = to_utc(end_time) if end_time is not None else None
+
         for item in series:
             obs_dt = base_time
             if "time" in item:
@@ -168,6 +183,11 @@ class ERA5LandProvider(BaseWeatherProvider):
                     obs_dt = datetime.fromisoformat(item["time"].replace("Z", "+00:00"))
                 except Exception:
                     pass
+
+            obs_utc = to_utc(obs_dt)
+            if end_utc is not None:
+                if obs_utc < start_utc or obs_utc > end_utc:
+                    continue
 
             raw_temp = item.get("2m_temperature") if "2m_temperature" in item else item.get("t2m")
             raw_dew = item.get("2m_dewpoint_temperature") if "2m_dewpoint_temperature" in item else item.get("d2m")

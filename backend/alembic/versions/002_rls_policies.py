@@ -67,11 +67,61 @@ def downgrade() -> None:
         DROP POLICY IF EXISTS org_admin_delete ON organisations;
         DROP POLICY IF EXISTS org_members_select ON organisation_members;
         DROP POLICY IF EXISTS org_members_write ON organisation_members;
+        DROP POLICY IF EXISTS org_members_insert ON organisation_members;
+        DROP POLICY IF EXISTS org_members_update ON organisation_members;
+        DROP POLICY IF EXISTS org_members_delete ON organisation_members;
         DROP POLICY IF EXISTS analysis_runs_isolation ON analysis_runs;
         DROP POLICY IF EXISTS processing_jobs_isolation ON processing_jobs;
         DROP POLICY IF EXISTS audit_logs_select ON audit_logs;
         DROP POLICY IF EXISTS audit_logs_insert ON audit_logs;
+
+        -- Disable and remove FORCE ROW LEVEL SECURITY to prevent fail-closed lockout after policy removal
+        ALTER TABLE users NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE users DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE worker_profiles NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE worker_profiles DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE consent_records NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE consent_records DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE shifts NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE shifts DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE location_samples NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE location_samples DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE break_events NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE break_events DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE exposure_intervals NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE exposure_intervals DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE earnings_uploads NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE earnings_uploads DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE earning_entries NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE earning_entries DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE evidence_reports NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE evidence_reports DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE report_sources NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE report_sources DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE share_grants NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE share_grants DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE cases NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE cases DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE case_notes NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE case_notes DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE organisations NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE organisations DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE organisation_members NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE organisation_members DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE analysis_runs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE analysis_runs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE processing_jobs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE processing_jobs DISABLE ROW LEVEL SECURITY;
+        ALTER TABLE audit_logs NO FORCE ROW LEVEL SECURITY;
+        ALTER TABLE audit_logs DISABLE ROW LEVEL SECURITY;
+
+        -- Drop SECURITY DEFINER and session identity helper functions
         DROP FUNCTION IF EXISTS authenticate_user_lookup(text, text);
+        DROP FUNCTION IF EXISTS is_org_member(text, text);
+        DROP FUNCTION IF EXISTS is_org_admin(text, text);
+        DROP FUNCTION IF EXISTS is_org_caseworker(text, text);
+        DROP FUNCTION IF EXISTS is_user_linked_to_org(text, text);
+        DROP FUNCTION IF EXISTS org_has_members(text);
         DROP FUNCTION IF EXISTS current_app_user_id();
         DROP FUNCTION IF EXISTS current_app_user_role();
         """)

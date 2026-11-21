@@ -37,6 +37,105 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Non-recursive Organisation Membership Helpers (SECURITY DEFINER)
+-- Evaluates membership without triggering recursive RLS policy evaluations
+CREATE OR REPLACE FUNCTION is_org_member(p_org_id text, p_user_id text)
+RETURNS boolean
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    IF p_org_id IS NULL OR p_user_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    RETURN EXISTS (
+        SELECT 1 FROM organisation_members
+        WHERE organisation_id = p_org_id
+          AND user_id = p_user_id
+          AND is_active = TRUE
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION is_org_admin(p_org_id text, p_user_id text)
+RETURNS boolean
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    IF p_org_id IS NULL OR p_user_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    RETURN EXISTS (
+        SELECT 1 FROM organisation_members
+        WHERE organisation_id = p_org_id
+          AND user_id = p_user_id
+          AND is_active = TRUE
+          AND role = 'admin'
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION is_org_caseworker(p_org_id text, p_user_id text)
+RETURNS boolean
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    IF p_org_id IS NULL OR p_user_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    RETURN EXISTS (
+        SELECT 1 FROM organisation_members
+        WHERE organisation_id = p_org_id
+          AND user_id = p_user_id
+          AND is_active = TRUE
+          AND role IN ('admin', 'caseworker')
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION is_user_linked_to_org(p_org_id text, p_user_id text)
+RETURNS boolean
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    IF p_org_id IS NULL OR p_user_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    RETURN EXISTS (
+        SELECT 1 FROM organisation_members
+        WHERE organisation_id = p_org_id
+          AND user_id = p_user_id
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION org_has_members(p_org_id text)
+RETURNS boolean
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+    IF p_org_id IS NULL THEN
+        RETURN FALSE;
+    END IF;
+    RETURN EXISTS (
+        SELECT 1 FROM organisation_members
+        WHERE organisation_id = p_org_id
+    );
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Explicitly revoke public execution from all SECURITY DEFINER functions (SEC-DEF PRIVILEGE HARDENING)
+REVOKE ALL ON FUNCTION authenticate_user_lookup(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION is_org_member(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION is_org_admin(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION is_org_caseworker(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION is_user_linked_to_org(text, text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION org_has_members(text) FROM PUBLIC;
+
 -- 2. Enable and FORCE Row Level Security (RLS) on sensitive tables
 -- FORCE ensures table owners/application roles are also strictly subjected to RLS
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -209,12 +308,10 @@ CREATE POLICY org_shared_exposure_intervals_access ON exposure_intervals
         OR EXISTS (
             SELECT 1 FROM report_sources rs
             JOIN share_grants sg ON sg.report_id = rs.report_id
-            JOIN organisation_members om ON om.organisation_id = sg.organisation_id
             JOIN organisations o ON o.id = sg.organisation_id
             WHERE rs.source_id = exposure_intervals.id
               AND rs.source_type = 'WEATHER'
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
+              AND is_org_member(sg.organisation_id, current_app_user_id())
               AND o.is_approved = TRUE
               AND sg.is_revoked = FALSE
               AND sg.expires_at > NOW()
@@ -250,11 +347,9 @@ CREATE POLICY org_shared_reports_access ON evidence_reports
         current_app_user_role() = 'system_admin'
         OR EXISTS (
             SELECT 1 FROM share_grants sg
-            JOIN organisation_members om ON om.organisation_id = sg.organisation_id
             JOIN organisations o ON o.id = sg.organisation_id
             WHERE sg.report_id = evidence_reports.id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
+              AND is_org_member(sg.organisation_id, current_app_user_id())
               AND o.is_approved = TRUE
               AND sg.is_revoked = FALSE
               AND sg.expires_at > NOW()
@@ -274,11 +369,9 @@ CREATE POLICY report_sources_access ON report_sources
         )
         OR EXISTS (
             SELECT 1 FROM share_grants sg
-            JOIN organisation_members om ON om.organisation_id = sg.organisation_id
             JOIN organisations o ON o.id = sg.organisation_id
             WHERE sg.report_id = report_sources.report_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
+              AND is_org_member(sg.organisation_id, current_app_user_id())
               AND o.is_approved = TRUE
               AND sg.is_revoked = FALSE
               AND sg.expires_at > NOW()
@@ -321,31 +414,24 @@ CREATE POLICY org_share_grants_read ON share_grants
     FOR SELECT
     USING (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            JOIN organisations o ON o.id = om.organisation_id
-            WHERE om.organisation_id = share_grants.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
+        OR (
+            is_org_member(share_grants.organisation_id, current_app_user_id())
+            AND EXISTS (
+                SELECT 1 FROM organisations o
+                WHERE o.id = share_grants.organisation_id
+                  AND o.is_approved = TRUE
+            )
         )
     );
 
 -- 16. Cases: Separate SELECT, INSERT, UPDATE, DELETE permissions
--- All active members of approved org can SELECT
+-- All active members of approved org can SELECT (non-recursive check via is_org_member)
 DROP POLICY IF EXISTS org_cases_select ON cases;
 CREATE POLICY org_cases_select ON cases
     FOR SELECT
     USING (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            JOIN organisations o ON o.id = cases.organisation_id
-            WHERE om.organisation_id = cases.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
-        )
+        OR is_org_member(cases.organisation_id, current_app_user_id())
     );
 
 -- Only admin and caseworker can INSERT cases (viewer cannot write)
@@ -354,15 +440,7 @@ CREATE POLICY org_cases_insert ON cases
     FOR INSERT
     WITH CHECK (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            JOIN organisations o ON o.id = cases.organisation_id
-            WHERE om.organisation_id = cases.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
-              AND om.role IN ('admin', 'caseworker')
-        )
+        OR is_org_caseworker(cases.organisation_id, current_app_user_id())
     );
 
 -- Only admin and caseworker can UPDATE cases (viewer cannot write)
@@ -371,27 +449,11 @@ CREATE POLICY org_cases_update ON cases
     FOR UPDATE
     USING (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            JOIN organisations o ON o.id = cases.organisation_id
-            WHERE om.organisation_id = cases.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
-              AND om.role IN ('admin', 'caseworker')
-        )
+        OR is_org_caseworker(cases.organisation_id, current_app_user_id())
     )
     WITH CHECK (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            JOIN organisations o ON o.id = cases.organisation_id
-            WHERE om.organisation_id = cases.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
-              AND om.role IN ('admin', 'caseworker')
-        )
+        OR is_org_caseworker(cases.organisation_id, current_app_user_id())
     );
 
 -- Only org admin can DELETE cases
@@ -400,15 +462,7 @@ CREATE POLICY org_cases_delete ON cases
     FOR DELETE
     USING (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            JOIN organisations o ON o.id = cases.organisation_id
-            WHERE om.organisation_id = cases.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
-              AND om.role = 'admin'
-        )
+        OR is_org_admin(cases.organisation_id, current_app_user_id())
     );
 
 -- 17. Case Notes: Members can read; admin & caseworker can insert
@@ -419,12 +473,8 @@ CREATE POLICY org_case_notes_select ON case_notes
         current_app_user_role() = 'system_admin'
         OR EXISTS (
             SELECT 1 FROM cases c
-            JOIN organisation_members om ON om.organisation_id = c.organisation_id
-            JOIN organisations o ON o.id = c.organisation_id
             WHERE c.id = case_notes.case_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
+              AND is_org_member(c.organisation_id, current_app_user_id())
         )
     );
 
@@ -435,28 +485,19 @@ CREATE POLICY org_case_notes_insert ON case_notes
         current_app_user_role() = 'system_admin'
         OR EXISTS (
             SELECT 1 FROM cases c
-            JOIN organisation_members om ON om.organisation_id = c.organisation_id
-            JOIN organisations o ON o.id = c.organisation_id
             WHERE c.id = case_notes.case_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND o.is_approved = TRUE
-              AND om.role IN ('admin', 'caseworker')
+              AND is_org_caseworker(c.organisation_id, current_app_user_id())
         )
     );
 
--- 18. Organisations: Public can read approved orgs; admins manage orgs
+-- 18. Organisations: Public can read approved orgs; creators can read their own pending org; admins manage orgs
 DROP POLICY IF EXISTS org_public_approved_select ON organisations;
 CREATE POLICY org_public_approved_select ON organisations
     FOR SELECT
     USING (
         is_approved = TRUE
         OR current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            WHERE om.organisation_id = organisations.id
-              AND om.user_id = current_app_user_id()
-        )
+        OR is_user_linked_to_org(id, current_app_user_id())
     );
 
 DROP POLICY IF EXISTS org_insert ON organisations;
@@ -478,43 +519,49 @@ CREATE POLICY org_admin_delete ON organisations
     FOR DELETE
     USING (current_app_user_role() = 'system_admin');
 
--- 19. Organisation Members: Members can read within their org; org admin manages members
+-- 19. Organisation Members: Non-recursive member read and write; allows initial pending founder registration
 DROP POLICY IF EXISTS org_members_select ON organisation_members;
 CREATE POLICY org_members_select ON organisation_members
     FOR SELECT
     USING (
         user_id = current_app_user_id()
         OR current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            WHERE om.organisation_id = organisation_members.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-        )
+        OR is_org_member(organisation_id, current_app_user_id())
     );
 
 DROP POLICY IF EXISTS org_members_write ON organisation_members;
-CREATE POLICY org_members_write ON organisation_members
-    FOR ALL
+DROP POLICY IF EXISTS org_members_insert ON organisation_members;
+CREATE POLICY org_members_insert ON organisation_members
+    FOR INSERT
+    WITH CHECK (
+        current_app_user_role() = 'system_admin'
+        OR is_org_admin(organisation_id, current_app_user_id())
+        OR (
+            user_id = current_app_user_id()
+            AND role = 'admin'
+            AND is_active = FALSE
+            AND NOT org_has_members(organisation_id)
+        )
+    );
+
+DROP POLICY IF EXISTS org_members_update ON organisation_members;
+CREATE POLICY org_members_update ON organisation_members
+    FOR UPDATE
     USING (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            WHERE om.organisation_id = organisation_members.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND om.role = 'admin'
-        )
+        OR is_org_admin(organisation_id, current_app_user_id())
     )
     WITH CHECK (
         current_app_user_role() = 'system_admin'
-        OR EXISTS (
-            SELECT 1 FROM organisation_members om
-            WHERE om.organisation_id = organisation_members.organisation_id
-              AND om.user_id = current_app_user_id()
-              AND om.is_active = TRUE
-              AND om.role = 'admin'
-        )
+        OR is_org_admin(organisation_id, current_app_user_id())
+    );
+
+DROP POLICY IF EXISTS org_members_delete ON organisation_members;
+CREATE POLICY org_members_delete ON organisation_members
+    FOR DELETE
+    USING (
+        current_app_user_role() = 'system_admin'
+        OR is_org_admin(organisation_id, current_app_user_id())
     );
 
 -- 20. Analysis Runs: Worker owns their analysis runs
@@ -562,7 +609,12 @@ BEGIN
         GRANT USAGE ON SCHEMA public TO heatledger_app_user;
         GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO heatledger_app_user;
         GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO heatledger_app_user;
-        GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO heatledger_app_user;
+        GRANT EXECUTE ON FUNCTION authenticate_user_lookup(text, text) TO heatledger_app_user;
+        GRANT EXECUTE ON FUNCTION is_org_member(text, text) TO heatledger_app_user;
+        GRANT EXECUTE ON FUNCTION is_org_admin(text, text) TO heatledger_app_user;
+        GRANT EXECUTE ON FUNCTION is_org_caseworker(text, text) TO heatledger_app_user;
+        GRANT EXECUTE ON FUNCTION is_user_linked_to_org(text, text) TO heatledger_app_user;
+        GRANT EXECUTE ON FUNCTION org_has_members(text) TO heatledger_app_user;
     END IF;
 END
 $$;
