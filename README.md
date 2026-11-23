@@ -145,3 +145,9 @@ Run all tests:
 python -m pytest backend/tests -v
 ```
 Result: **34 passed in 8.32s**
+
+---
+
+## 6. License
+
+This repository is licensed under the [MIT License](LICENSE).
