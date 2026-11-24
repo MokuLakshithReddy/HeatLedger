@@ -62,25 +62,32 @@ Idea_Forge_NIAT/
 - Docker (optional for PostgreSQL + PostGIS)
 
 ### Backend Setup
+Execute from the repository root:
 ```bash
-# 1. Activate Python virtual environment
-cd backend
-python -m venv venv
-venv\Scripts\activate # On Windows (or source venv/bin/activate on Linux/macOS)
-pip install -r requirements.txt
+# 1. Create and activate Python virtual environment
+python -m venv backend/venv
+# Windows:
+backend\venv\Scripts\activate
+# Linux/macOS:
+source backend/venv/bin/activate
 
-# 2. Run database migrations (creates 20 tables & indexes)
-python -m alembic -c backend/alembic.ini upgrade head
+# 2. Install dependencies
+pip install -r backend/requirements.txt
 
-# 3. Seed demonstration data for Hyderabad
+# 3. Run database migrations
+alembic -c backend/alembic.ini upgrade head
+
+# 4. Seed demonstration data for Hyderabad pilot
 python -m backend.app.seed_demo
 
-# 4. Run automated tests (20 unit, integration, and E2E tests)
-python -m pytest backend/tests -v
+# 5. Run automated tests (43 passed test suite)
+pytest backend/tests -v
 
-# 5. Start development API server
+# 6. Start development API server
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+
+*(Note: If you run directly from within the `backend/` directory, use `alembic -c alembic.ini upgrade head`, `python -m app.seed_demo`, `pytest tests -v`, and `uvicorn app.main:app`.)*
 Interactive API documentation: `http://localhost:8000/docs`
 
 ### Web Portal Setup

@@ -352,3 +352,32 @@ class TestPostgreSQLRowLevelSecurity:
                 {"fn": fn}
             ).scalar()
             assert has_priv is False, f"Function {fn} must not be executable by PUBLIC"
+
+    def test_authenticated_user_lookup_succeeds_under_rls(self, pg_session):
+        """Verifies get_current_user logic where RLS identity is initialized before querying users."""
+        from backend.app.core.security import create_access_token
+        from backend.app.api.deps import get_current_user
+        from fastapi.security import HTTPAuthorizationCredentials
+
+        test_uid = "auth-rls-test-worker"
+        # Seed test user using admin identity
+        pg_session.execute(text("SELECT set_config('app.current_user_id', 'admin', true)"))
+        pg_session.execute(text("SELECT set_config('app.current_user_role', 'system_admin', true)"))
+        pg_session.execute(text("""
+            INSERT INTO users (id, email, hashed_password, role, preferred_language, is_active, created_at, updated_at)
+            VALUES (:uid, 'auth_test@heatledger.local', 'hash', 'worker', 'en', true, NOW(), NOW())
+            ON CONFLICT (id) DO NOTHING
+        """), {"uid": test_uid})
+        pg_session.commit()
+
+        # Clear session variables to simulate fresh unauthenticated connection state
+        pg_session.execute(text("SELECT set_config('app.current_user_id', '', true)"))
+        pg_session.execute(text("SELECT set_config('app.current_user_role', '', true)"))
+
+        token = create_access_token(data={"sub": test_uid, "role": "worker"})
+        creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+
+        user = get_current_user(credentials=creds, db=pg_session)
+        assert user is not None
+        assert user.id == test_uid
+        assert user.role == "worker"

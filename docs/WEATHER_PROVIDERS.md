@@ -32,3 +32,15 @@ To prevent spurious environmental correlation, observations are strictly filtere
 - **Maximum Temporal Window:** 60 minutes (Time difference between shift interval and station observation timestamp).
 - **Work vs. Rest Separation (CLIM-05):**
   - Break periods declared by the worker are excluded from active heat exposure totals.
+
+---
+
+## 3. Demonstration Mode & Provenance Transparency
+
+When deployed in development or demonstration mode without configured official IMD / Copernicus CDS API keys:
+- The system automatically serves realistic Hyderabad pilot meteorological data (`DEMO_HYDERABAD`) representing extreme summer heat conditions (Begumpet, Charminar, Gachibowli, Airport outer ring).
+- **Explicit Provenance Labeling:** Every simulated record is transparently labeled in API payloads and database records:
+  - `data_type`: `"DEMO_FIXTURE"`
+  - `data_freshness_status`: `"DEMO_SAMPLE"`
+  - `validation_status`: `"DEMO_FIXTURE"`
+- **Production Guardrail:** If `ENVIRONMENT=production` or `DEMO_MODE=false`, synthetic observations are strictly rejected by `WeatherService`, guaranteeing that production evidence reports contain only authenticated, accredited meteorological sources.

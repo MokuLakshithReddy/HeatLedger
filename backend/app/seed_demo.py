@@ -81,15 +81,17 @@ def seed_demo_data():
             db.commit()
             print(f"Created demo worker: {worker_email}")
 
-        # 2. Demo Fictional Organisation (SEC-03: explicitly fictional demonstration entity)
-        org_slug = "demo-hyderabad-gig-workers-collective"
-        org = db.query(Organisation).filter(Organisation.slug == org_slug).first()
+        # 2. Demo Organisation (SEC-03: explicitly labeled demonstration entity for Hyderabad pilot)
+        org_slug = "tgpwu-telangana"
+        org = db.query(Organisation).filter(
+            (Organisation.slug == org_slug) | (Organisation.slug == "demo-hyderabad-gig-workers-collective")
+        ).first()
         if not org:
             org = Organisation(
-                name="Hyderabad Gig Delivery Collective (DEMO / Fictional Alliance)",
+                name="Telangana Gig & Platform Workers Union (TGPWU)",
                 slug=org_slug,
-                description="[DEMO ALLIANCE] Fictional demonstration union representing gig delivery workers for platform testing and evidence evaluation.",
-                contact_email="advocacy@demoworkers.local",
+                description="[DEMO ALLIANCE] Telangana Gig and Platform Workers Union representing gig delivery workers for platform testing and evidence evaluation.",
+                contact_email="advocate@telanganaworkers.org",
                 org_type="union",
                 is_approved=True, # Approved specifically for local demonstration
             )
@@ -97,32 +99,57 @@ def seed_demo_data():
             db.commit()
             db.refresh(org)
 
-            # Org Admin User
-            org_user_email = "advocate@demoworkers.local"
-            org_user = db.query(User).filter(User.email == org_user_email).first()
-            if not org_user:
-                org_user = User(
-                    email=org_user_email,
-                    phone="+919844001122",
-                    hashed_password=get_password_hash("DemoAdvocate123!"),
-                    full_name="Priya V. (DEMO Union Lead)",
-                    role="organisation_admin",
-                    preferred_language="en",
-                    is_active=True,
-                )
-                db.add(org_user)
-                db.commit()
-                db.refresh(org_user)
+        # 2.1 Primary Documented Org Admin User
+        primary_org_email = "advocate@telanganaworkers.org"
+        org_user = db.query(User).filter(User.email == primary_org_email).first()
+        if not org_user:
+            org_user = User(
+                email=primary_org_email,
+                phone="+919844001122",
+                hashed_password=get_password_hash("TelanganaUnion123!"),
+                full_name="Priya V. (TGPWU Union Lead)",
+                role="organisation_admin",
+                preferred_language="en",
+                is_active=True,
+            )
+            db.add(org_user)
+            db.commit()
+            db.refresh(org_user)
 
-                member = OrganisationMember(
-                    organisation_id=org.id,
-                    user_id=org_user.id,
-                    role="admin",
-                    is_active=True,
-                )
-                db.add(member)
-                db.commit()
-                print(f"Created demo organisation: {org.name}")
+            member = OrganisationMember(
+                organisation_id=org.id,
+                user_id=org_user.id,
+                role="admin",
+                is_active=True,
+            )
+            db.add(member)
+            db.commit()
+            print(f"Created demo organisation admin: {primary_org_email}")
+
+        # 2.2 Optional legacy alias for backward compatibility
+        legacy_org_email = "advocate@demoworkers.local"
+        legacy_user = db.query(User).filter(User.email == legacy_org_email).first()
+        if not legacy_user:
+            legacy_user = User(
+                email=legacy_org_email,
+                phone="+919844001123",
+                hashed_password=get_password_hash("DemoAdvocate123!"),
+                full_name="Priya V. (DEMO Alias)",
+                role="organisation_admin",
+                preferred_language="en",
+                is_active=True,
+            )
+            db.add(legacy_user)
+            db.commit()
+            db.refresh(legacy_user)
+
+            db.add(OrganisationMember(
+                organisation_id=org.id,
+                user_id=legacy_user.id,
+                role="admin",
+                is_active=True,
+            ))
+            db.commit()
 
         # 3. System Admin User
         admin_email = "admin@heatledger.local"

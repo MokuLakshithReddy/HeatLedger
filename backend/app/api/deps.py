@@ -42,30 +42,49 @@ def get_current_user(
     token = credentials.credentials
     payload = decode_access_token(token)
     user_id: str = payload.get("sub")
+    token_role: str = payload.get("role", "")
     if not user_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token payload is missing subject identifier",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    # SEC-RLS: Initialize transaction-scoped identity in PostgreSQL BEFORE querying User
+    # Under PostgreSQL Row Level Security (RLS), the 'users' table SELECT policy requires
+    # id = current_app_user_id() OR current_app_user_role() = 'system_admin'.
+    # If session variables are not initialized first, querying 'users' returns 0 rows.
+    db.info["current_user_id"] = str(user_id)
+    if token_role:
+        db.info["current_user_role"] = str(token_role)
+    try:
+        bind = db.get_bind()
+        if bind and bind.dialect.name == "postgresql":
+            db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user_id)})
+            if token_role:
+                db.execute(text("SELECT set_config('app.current_user_role', :role, true)"), {"role": str(token_role)})
+    except Exception as e:
+        logger.warning(f"Could not pre-set PostgreSQL RLS session variables: {e}")
+
     user = db.query(User).filter(User.id == user_id, User.is_active == True).first()
     if not user:
+        # If user not found or inactive, clear identity
+        db.info.pop("current_user_id", None)
+        db.info.pop("current_user_role", None)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Propagate session identity to PostgreSQL for Row Level Security (RLS)
-    db.info["current_user_id"] = str(user.id)
+    # Re-synchronize RLS role with the authoritative role stored in the database
     db.info["current_user_role"] = str(user.role)
     try:
         bind = db.get_bind()
         if bind and bind.dialect.name == "postgresql":
-            db.execute(text("SELECT set_config('app.current_user_id', :uid, true)"), {"uid": str(user.id)})
             db.execute(text("SELECT set_config('app.current_user_role', :role, true)"), {"role": str(user.role)})
     except Exception as e:
-        logger.warning(f"Could not set PostgreSQL RLS session variables: {e}")
+        logger.warning(f"Could not update PostgreSQL RLS role variable: {e}")
 
     return user
 

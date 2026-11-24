@@ -1,9 +1,42 @@
+import { Platform } from "react-native";
+import Constants from "expo-constants";
 import { SessionStore } from "./store";
 
-// In mobile environments, standard localhost points to device localhost.
-// Android emulator uses 10.0.2.2. Production uses configured environment URL.
-export const API_BASE =
-  process.env.EXPO_PUBLIC_API_URL || "http://10.0.2.2:8000/api/v1";
+/**
+ * Dynamically resolves the appropriate backend API URL:
+ * 1. EXPO_PUBLIC_API_URL environment variable if set (e.g. for custom LAN or production URL).
+ * 2. Auto-detected workstation LAN IP from Metro hostUri for physical Android/iOS devices running Expo Go.
+ * 3. 10.0.2.2 for Android Studio emulators.
+ * 4. localhost for iOS Simulators and Web browser debugging.
+ */
+function resolveApiBase(): string {
+  if (process.env.EXPO_PUBLIC_API_URL) {
+    return process.env.EXPO_PUBLIC_API_URL.replace(/\/+$/, "");
+  }
+
+  try {
+    const hostUri =
+      Constants.expoConfig?.hostUri ||
+      (Constants as any).manifest2?.extra?.expoClient?.hostUri ||
+      (Constants as any).manifest?.debuggerHost;
+    if (hostUri) {
+      const hostIp = hostUri.split(":")[0];
+      if (hostIp && hostIp !== "localhost" && hostIp !== "127.0.0.1") {
+        return `http://${hostIp}:8000/api/v1`;
+      }
+    }
+  } catch {
+    // Proceed to platform defaults
+  }
+
+  if (Platform.OS === "android") {
+    return "http://10.0.2.2:8000/api/v1";
+  }
+
+  return "http://localhost:8000/api/v1";
+}
+
+export const API_BASE = resolveApiBase();
 
 export async function mobileApiFetch<T>(
   endpoint: string,
@@ -21,14 +54,19 @@ export async function mobileApiFetch<T>(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
-  // Primary URL, with fallback to localhost:8000 for web/desktop debugging
-  const urls = [
+  // Deduplicated candidate URLs starting with the dynamically resolved API_BASE
+  const urls: string[] = [
     `${API_BASE}${endpoint}`,
     `http://localhost:8000/api/v1${endpoint}`,
+    `http://127.0.0.1:8000/api/v1${endpoint}`,
   ];
+  if (Platform.OS === "android" && API_BASE !== "http://10.0.2.2:8000/api/v1") {
+    urls.push(`http://10.0.2.2:8000/api/v1${endpoint}`);
+  }
+  const candidateUrls = Array.from(new Set(urls));
 
   let lastError: any = null;
-  for (const url of urls) {
+  for (const url of candidateUrls) {
     try {
       const response = await fetch(url, { ...options, headers });
       if (!response.ok) {

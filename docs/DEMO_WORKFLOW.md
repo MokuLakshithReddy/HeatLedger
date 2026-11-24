@@ -6,14 +6,16 @@ This guide details how to run, inspect, and demonstrate HeatLedger locally using
 
 ## 1. Quick Start Commands
 
-### Backend Service
+### Backend Service (From Repository Root)
 ```bash
 # 1. Activate Python virtual environment
-cd backend
-source venv/bin/activate # or backend\venv\Scripts\activate on Windows
+# Windows:
+backend\venv\Scripts\activate
+# Linux/macOS:
+source backend/venv/bin/activate
 
 # 2. Run migrations
-python -m alembic -c backend/alembic.ini upgrade head
+alembic -c backend/alembic.ini upgrade head
 
 # 3. Seed demonstration data (Hyderabad pilot)
 python -m backend.app.seed_demo
@@ -21,6 +23,7 @@ python -m backend.app.seed_demo
 # 4. Start the FastAPI server
 uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+*(If executing from inside the `backend/` directory, use `alembic -c alembic.ini upgrade head`, `python -m app.seed_demo`, and `uvicorn app.main:app`.)*
 Interactive OpenAPI documentation is available at: **http://localhost:8000/docs**
 
 ### Web Application (Organisation Portal)
@@ -66,3 +69,20 @@ Access the web portal at: **http://localhost:3000**
 ### Workflow C: Cohort Anonymity Safeguard Verification
 1. On the web portal, navigate to **Cohort Analytics** (`/analytics`).
 2. Observe the k-anonymity safeguard message (k ≥ 5): individual identifiers are suppressed when the cohort has fewer than 5 consented workers to protect against platform retaliation.
+
+---
+
+## 4. Device Configuration & Demonstration Notes
+
+### Physical Mobile Device Testing
+- **Expo Go LAN Auto-Detection:** When running `npx expo start` inside `mobile/`, the app automatically resolves the host workstation's Wi-Fi IP address from the Metro bundler.
+- **Manual LAN Override:** If testing across segmented Wi-Fi networks, configure your host machine's LAN IP in `mobile/.env.local`:
+  ```bash
+  EXPO_PUBLIC_API_URL=http://<YOUR_WORKSTATION_IP>:8000/api/v1
+  ```
+- **Android Emulator:** Uses `http://10.0.2.2:8000/api/v1` automatically.
+
+### Climate Data Provenance Transparency
+- In local development and hackathon presentations without registered IMD/Copernicus credentials, HeatLedger uses clearly designated simulated fixtures (`DEMO_SAMPLE`, `DEMO_FIXTURE`).
+- This guarantees full capability demonstration for Hyderabad summer heat stress without relying on third-party API availability during offline judging.
+- In production (`ENVIRONMENT=production` or `DEMO_MODE=false`), synthetic fixtures are rejected and authenticated agency integrations are enforced.

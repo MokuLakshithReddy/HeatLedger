@@ -33,6 +33,13 @@ async def lifespan(app: FastAPI):
     if settings.ENVIRONMENT != "production":
         Base.metadata.create_all(bind=engine)
         logger.info("Database schema verified (non-production).")
+        if settings.DEMO_MODE:
+            try:
+                from backend.app.seed_demo import seed_demo_data
+                seed_demo_data()
+                logger.info("Demonstration fixtures verified/seeded (DEMO_MODE=true).")
+            except Exception as e:
+                logger.warning(f"Could not automatically seed demonstration data: {e}")
     yield
     logger.info("HeatLedger Backend Shutting Down...")
 
